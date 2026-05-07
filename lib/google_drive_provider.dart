@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 import 'package:flutter/cupertino.dart';
@@ -8,7 +9,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
-import 'package:googleapis_auth/googleapis_auth.dart' show AccessDeniedException;
+import 'package:googleapis_auth/googleapis_auth.dart'
+    show AccessDeniedException, AuthClient;
+import 'package:http/http.dart' as http;
 import 'package:http/retry.dart';
 import 'package:multi_cloud_storage/exceptions/no_connection_exception.dart';
 import 'package:path/path.dart';
@@ -22,8 +25,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
   bool isAuthenticated = false;
 
   // Singleton instance backing fields.
-  static GoogleSignIn? googleSignIn;
+  static GoogleSignInAccount? currentAccount;
+  static GoogleSignInClientAuthorization? currentAuthorization;
+  static AuthClient? _authClient;
   static GoogleDriveProvider? _instance;
+  static bool _initialized = false;
   static List<String> scopes = [
     MultiCloudStorage.cloudAccess == CloudAccessType.appStorage
         ? drive.DriveApi.driveAppdataScope
@@ -62,36 +68,37 @@ class GoogleDriveProvider extends CloudStorageProvider {
       GoogleDriveProvider.scopes = scopes;
     }
     try {
-      // Initialize GoogleSignIn with the correct scope based on the desired cloud access level.
-      googleSignIn ??=
-          GoogleSignIn(scopes: GoogleDriveProvider.scopes, serverClientId: serverClientId);
+      if (!_initialized) {
+        await GoogleSignIn.instance.initialize(serverClientId: serverClientId);
+        _initialized = true;
+      }
       GoogleSignInAccount? account;
-      // Attempt silent sign-in first to avoid unnecessary user interaction.
       if (!forceInteractive) {
-        account = await googleSignIn!.signInSilently();
+        final lightweightResult =
+            GoogleSignIn.instance.attemptLightweightAuthentication();
+        if (lightweightResult != null) {
+          account = await lightweightResult;
+        }
       }
-      // If silent sign-in fails or is skipped, start the interactive sign-in flow.
-      account ??= await googleSignIn!.signIn();
       if (account == null) {
-        debugPrint('User cancelled Google Sign-In process.');
-        return null;
+        try {
+          account = await GoogleSignIn.instance
+              .authenticate(scopeHint: GoogleDriveProvider.scopes);
+        } on GoogleSignInException catch (e) {
+          if (e.code == GoogleSignInExceptionCode.canceled) {
+            debugPrint('User cancelled Google Sign-In process.');
+            return null;
+          }
+          rethrow;
+        }
       }
-      // Ensure the user has granted the required permissions.
-      final bool hasPermissions = await googleSignIn!.requestScopes(GoogleDriveProvider.scopes);
-      if (!hasPermissions) {
-        debugPrint('User did not grant necessary Google Drive permissions.');
-        await signOut();
-        return null;
-      }
-      // Get the authenticated HTTP client.
-      final client = await googleSignIn!.authenticatedClient();
-      if (client == null) {
-        debugPrint(
-            'Failed to get authenticated Google client after permissions were granted.');
-        await signOut();
-        return null;
-      }
-      // Wrap the client in a RetryClient to handle transient network errors (5xx).
+      currentAccount = account;
+      final authorization = await account.authorizationClient
+          .authorizeScopes(GoogleDriveProvider.scopes);
+      currentAuthorization = authorization;
+      final client =
+          authorization.authClient(scopes: GoogleDriveProvider.scopes);
+      _authClient = client;
       final retryClient = RetryClient(
         client,
         retries: 3,
@@ -99,7 +106,6 @@ class GoogleDriveProvider extends CloudStorageProvider {
         onRetry: (request, response, retryCount) => debugPrint(
             'Retrying request to ${request.url} (Retry #$retryCount)'),
       );
-      // Create or update the singleton instance with the authenticated client.
       final provider = _instance ?? GoogleDriveProvider.internal();
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
@@ -156,6 +162,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
               modifiedTime: file.modifiedTime ?? DateTime.now(),
               isDirectory:
                   file.mimeType == 'application/vnd.google-apps.folder',
+              id: file.id,
+              mimeType: file.mimeType,
               metadata: {
                 'id': file.id,
                 'mimeType': file.mimeType,
@@ -283,6 +291,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
         size: file.size == null ? null : int.tryParse(file.size!),
         modifiedTime: file.modifiedTime ?? DateTime.now(),
         isDirectory: file.mimeType == 'application/vnd.google-apps.folder',
+        id: file.id,
+        mimeType: file.mimeType,
         metadata: {
           'id': file.id,
           'mimeType': file.mimeType,
@@ -294,8 +304,49 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<String?> loggedInUserDisplayName() async {
-    return googleSignIn?.currentUser?.displayName;
+    return currentAccount?.displayName;
   }
+
+  @override
+  Future<Uint8List> getFileRange({
+    required String path,
+    required int offset,
+    required int length,
+  }) {
+    return _executeRequest(() async {
+      final file = await _getFileByPath(path);
+      if (file == null || file.id == null) {
+        throw Exception('GoogleDriveProvider: File not found at $path');
+      }
+      final client = _authClient;
+      if (client == null) throw Exception('Not authenticated');
+      final uri = Uri.parse(
+          'https://www.googleapis.com/drive/v3/files/${file.id}?alt=media');
+      final request = http.Request('GET', uri);
+      request.headers['Range'] = 'bytes=$offset-${offset + length - 1}';
+      final response = await client.send(request);
+      final bytes = await response.stream.fold<BytesBuilder>(
+          BytesBuilder(), (b, d) => b..add(d));
+      return bytes.toBytes();
+    });
+  }
+
+  @override
+  Future<String?> getDownloadUrl(String path) {
+    return _executeRequest(() async {
+      final file = await _getFileByPath(path);
+      if (file == null || file.id == null) return null;
+      final metadata = await driveApi.files
+          .get(file.id!, $fields: 'id,webContentLink') as drive.File;
+      return metadata.webContentLink;
+    });
+  }
+
+  @override
+  Future<String?> loggedInUserEmail() async => currentAccount?.email;
+
+  @override
+  Future<String?> loggedInUserId() async => currentAccount?.id;
 
   /// Checks if the current user's authentication token is expired.
   @override
@@ -401,13 +452,15 @@ class GoogleDriveProvider extends CloudStorageProvider {
   /// Signs the user out of Google and disconnects the app.
   static Future<void> signOut() async {
     try {
-      await googleSignIn?.disconnect();
-      await googleSignIn?.signOut();
+      await GoogleSignIn.instance.disconnect();
+      await GoogleSignIn.instance.signOut();
     } catch (error) {
       debugPrint('Failed to sign out or disconnect from Google. $error');
     } finally {
-      // Clear all state regardless of success or failure.
-      googleSignIn = null;
+      _authClient?.close();
+      _authClient = null;
+      currentAccount = null;
+      currentAuthorization = null;
       if (_instance != null) {
         _instance!.isAuthenticated = false;
         _instance = null;
@@ -601,10 +654,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   /// Escapes single quotes in a string for use in a Drive API query.
   String _sanitizeQueryString(String value) => value.replaceAll("'", "\\'");
 
+  @override
   Future<String?> getAccessToken() async {
-    final authHeaders = await googleSignIn?.currentUser?.authHeaders;
-    // The header is in the format: { 'Authorization': 'Bearer <ACCESS_TOKEN>' }
-    return authHeaders?['Authorization']?.substring('Bearer '.length);
+    return currentAuthorization?.accessToken;
   }
 }
 

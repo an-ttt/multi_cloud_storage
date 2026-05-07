@@ -64,9 +64,7 @@ class _CloudStorageExampleState extends State<CloudStorageExample> {
                   onPressed: () async {
                     final provider = await MultiCloudStorage.connectToOneDrive(
                         clientId: '',
-                        redirectUri: '',
-                        context:
-                            context); // App registration required: https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
+                        redirectUri: ''); // App registration required: https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
                     if (provider != null && context.mounted) {
                       openExplorer(context, provider);
                     }

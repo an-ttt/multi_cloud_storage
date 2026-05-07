@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 abstract class CloudStorageProvider {
   /// Lists all files and directories at the specified [path].
   Future<List<CloudFile>> listFiles({
@@ -52,6 +54,20 @@ abstract class CloudStorageProvider {
     required String shareToken,
     Map<String, dynamic>? metadata,
   });
+
+  Future<Uint8List> getFileRange({
+    required String path,
+    required int offset,
+    required int length,
+  });
+
+  Future<String?> getDownloadUrl(String path);
+
+  Future<String?> getAccessToken();
+
+  Future<String?> loggedInUserEmail();
+
+  Future<String?> loggedInUserId();
 }
 
 /// Represents a file or directory within the cloud storage.
@@ -73,6 +89,8 @@ class CloudFile {
 
   /// Custom metadata associated with the file.
   final Map<String, dynamic>? metadata;
+  final String? id;
+  final String? mimeType;
 
   CloudFile({
     required this.path,
@@ -81,5 +99,7 @@ class CloudFile {
     required this.modifiedTime,
     required this.isDirectory,
     this.metadata,
+    this.id,
+    this.mimeType,
   });
 }

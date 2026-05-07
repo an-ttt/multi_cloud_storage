@@ -143,6 +143,38 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     return null;
   }
 
+  @override
+  Future<String?> loggedInUserEmail() async {
+    try {
+      final response = await client.get(
+        Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+      );
+      if (response.statusCode == 200) {
+        final userInfo = jsonDecode(response.body);
+        return userInfo['email'] as String?;
+      }
+    } catch (e) {
+      debugPrint('Error fetching user email: $e');
+    }
+    return null;
+  }
+
+  @override
+  Future<String?> loggedInUserId() async {
+    try {
+      final response = await client.get(
+        Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+      );
+      if (response.statusCode == 200) {
+        final userInfo = jsonDecode(response.body);
+        return userInfo['sub'] as String?;
+      }
+    } catch (e) {
+      debugPrint('Error fetching user id: $e');
+    }
+    return null;
+  }
+
   /// Signs the user out of Google and disconnects the app.
   static Future<void> signOut() async {
     try {

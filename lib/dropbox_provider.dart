@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:app_links/app_links.dart';
 import 'package:crypto/crypto.dart';
@@ -275,6 +276,50 @@ class DropboxProvider extends CloudStorageProvider {
   /// Retrieves the display name of the currently logged-in user.
   @override
   Future<String?> loggedInUserDisplayName() async => _account?.displayName;
+
+  @override
+  Future<Uint8List> getFileRange({
+    required String path,
+    required int offset,
+    required int length,
+  }) {
+    return _executeRequest(() async {
+      final normalizedPath = _normalizePath(path);
+      final response = await _dio.post(
+        'https://content.dropboxapi.com/2/files/download',
+        options: Options(
+          headers: {
+            'Dropbox-API-Arg': jsonEncode({'path': normalizedPath}),
+            'Range': 'bytes=$offset-${offset + length - 1}',
+          },
+          responseType: ResponseType.bytes,
+        ),
+      );
+      return Uint8List.fromList(response.data);
+    });
+  }
+
+  @override
+  Future<String?> getDownloadUrl(String path) {
+    return _executeRequest(() async {
+      final normalizedPath = _normalizePath(path);
+      final response = await _dio.post(
+        'https://api.dropboxapi.com/2/files/get_temporary_link',
+        data: jsonEncode({'path': normalizedPath}),
+        options: Options(contentType: 'application/json'),
+      );
+      return response.data['link'] as String?;
+    });
+  }
+
+  @override
+  Future<String?> getAccessToken() async => _token?.accessToken;
+
+  @override
+  Future<String?> loggedInUserEmail() async => _account?.email;
+
+  @override
+  Future<String?> loggedInUserId() async => _account?.accountId;
 
   /// Checks if the current user's authentication token is expired.
   @override
@@ -608,6 +653,8 @@ class DropboxProvider extends CloudStorageProvider {
           isDir ? null : DateTime.tryParse(data['server_modified'] ?? ''),
       isDirectory: isDir,
       metadata: {'id': data['id'], if (!isDir) 'rev': data['rev']},
+      id: data['id'],
+      mimeType: isDir ? 'application/vnd.google-apps.folder' : null,
     );
   }
 

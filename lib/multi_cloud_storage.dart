@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/cupertino.dart';
 import  'package:multi_cloud_storage/cloud_storage_provider.dart';
 import  'package:multi_cloud_storage/google_drive_provider.dart';
 import  'package:multi_cloud_storage/google_drive_provider_desktop.dart';
@@ -53,13 +52,11 @@ class MultiCloudStorage {
   static Future<CloudStorageProvider?> connectToOneDrive({
     required String clientId,
     required String redirectUri,
-    required BuildContext context,
     String? scopes,
   }) =>
       OneDriveProvider.connect(
           clientId: clientId,
           redirectUri: redirectUri,
-          context: context,
           scopes: scopes);
 }
 

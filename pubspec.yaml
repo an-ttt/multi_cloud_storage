@@ -11,9 +11,8 @@ dependencies:
   flutter:
     sdk: flutter
   googleapis: ^14.0.0
-  extension_google_sign_in_as_googleapis_auth: ^2.0.13
-  google_sign_in: ^6.3.0
-  flutter_onedrive: ^1.8.1
+  extension_google_sign_in_as_googleapis_auth: ^3.0.0
+  google_sign_in: ^7.1.1
   path: ^1.9.1
   http: ^1.6.0
   flutter_web_auth_2: ^5.0.1
@@ -23,11 +22,9 @@ dependencies:
   app_links: ^7.0.0
   flutter_secure_storage: ^9.2.4
   icloud_storage_sync: ^0.0.4
-  dio_cookie_manager: ^3.4.0
-  cookie_jar: ^4.0.9
-  flutter_inappwebview: ^6.1.5
-  googleapis_auth: ^1.4.1
-  google_sign_in_all_platforms: ^1.2.1
+  googleapis_auth: ^2.0.0
+  google_sign_in_all_platforms: ^2.0.0
+  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_test:

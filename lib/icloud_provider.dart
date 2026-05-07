@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -276,5 +277,34 @@ class ICloudProvider extends CloudStorageProvider {
       return path.substring(1);
     }
     return path;
+  }
+
+  @override
+  Future<Uint8List> getFileRange({
+    required String path,
+    required int offset,
+    required int length,
+  }) async {
+    throw UnsupportedError('getFileRange is not supported for iCloud');
+  }
+
+  @override
+  Future<String?> getDownloadUrl(String path) async {
+    throw UnsupportedError('getDownloadUrl is not supported for iCloud');
+  }
+
+  @override
+  Future<String?> getAccessToken() async {
+    return null;
+  }
+
+  @override
+  Future<String?> loggedInUserEmail() async {
+    return null;
+  }
+
+  @override
+  Future<String?> loggedInUserId() async {
+    return null;
   }
 }
