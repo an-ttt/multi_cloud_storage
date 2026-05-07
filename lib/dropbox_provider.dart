@@ -103,6 +103,41 @@ class DropboxProvider extends CloudStorageProvider {
     }
   }
 
+  static Future<DropboxProvider?> connectWithToken({
+    required String appKey,
+    required String appSecret,
+    required String redirectUri,
+    required String accessToken,
+    String? refreshToken,
+  }) async {
+    if (appKey.isEmpty || redirectUri.isEmpty) {
+      debugPrint(
+          'Dropbox connectWithToken failed: App Key or Redirect URI is missing.');
+      return null;
+    }
+    try {
+      final provider = DropboxProvider._create(
+          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri);
+      provider._token = DropboxToken(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenType: 'bearer',
+        expiresIn: DateTime.now().add(const Duration(days: 365)),
+      );
+      provider._isAuthenticated = true;
+      try {
+        await provider._fetchCurrentUserAccount();
+      } catch (e) {
+        debugPrint('Dropbox connectWithToken: failed to fetch user account: $e');
+      }
+      debugPrint('Dropbox connectWithToken successful for ${provider._account?.email}');
+      return provider;
+    } catch (error) {
+      debugPrint('Error occurred during Dropbox connectWithToken: $error');
+      rethrow;
+    }
+  }
+
   /// Lists all files and directories at the specified [path].
   @override
   Future<List<CloudFile>> listFiles(

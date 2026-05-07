@@ -58,6 +58,39 @@ class OneDriveProvider extends CloudStorageProvider {
     }
   }
 
+  static Future<OneDriveProvider?> connectWithToken({
+    required String clientId,
+    required String redirectUri,
+    required String accessToken,
+    String? refreshToken,
+    int? expiresIn,
+  }) async {
+    if (clientId.trim().isEmpty) {
+      throw ArgumentError(
+          'App registration required: https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade');
+    }
+    if (redirectUri.isEmpty) {
+      redirectUri = 'https://login.microsoftonline.com/common/oauth2/nativeclient';
+    }
+    try {
+      final provider = OneDriveProvider._(
+        clientId: clientId,
+        redirectUri: redirectUri,
+      );
+      provider._accessToken = accessToken;
+      provider._refreshToken = refreshToken;
+      provider._tokenExpiry = expiresIn != null && expiresIn > 0
+          ? DateTime.now().add(Duration(seconds: expiresIn))
+          : DateTime.now().add(const Duration(days: 365));
+      provider._isAuthenticated = true;
+      debugPrint('OneDrive connectWithToken successful');
+      return provider;
+    } catch (e) {
+      debugPrint('OneDrive connectWithToken exception: ${e.toString()}');
+      rethrow;
+    }
+  }
+
   Future<void> _authenticate(String scopes) async {
     final prefs = await SharedPreferences.getInstance();
     _accessToken = prefs.getString('onedrive_access_token');

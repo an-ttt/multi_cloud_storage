@@ -123,6 +123,39 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     }
   }
 
+  static Future<GoogleDriveProvider?> connectWithToken({
+    required String accessToken,
+    String? refreshToken,
+    String? clientId,
+    String? clientSecret,
+  }) async {
+    debugPrint('connectWithToken Google Drive Desktop');
+    try {
+      final httpClient = _DesktopManualTokenHttpClient(
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        clientId: clientId,
+        clientSecret: clientSecret,
+      );
+      final retryClient = RetryClient(
+        httpClient,
+        retries: 3,
+        when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+        onRetry: (request, response, retryCount) => debugPrint(
+            'Retrying request to ${request.url} (Retry #$retryCount)'),
+      );
+      final provider = _instance ?? GoogleDriveProviderDesktop.internal();
+      provider.driveApi = drive.DriveApi(retryClient);
+      provider.isAuthenticated = true;
+      provider._accessToken = accessToken;
+      debugPrint('Google Drive Desktop connectWithToken successful');
+      return provider;
+    } catch (error) {
+      debugPrint('Error occurred during Google Drive Desktop connectWithToken: $error');
+      return null;
+    }
+  }
+
   @override
   Future<String?> loggedInUserDisplayName() async {
     try {
@@ -219,6 +252,32 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   @override
   Future<String?> getAccessToken() async {
     return _accessToken;
+  }
+}
+
+class _DesktopManualTokenHttpClient extends http.BaseClient {
+  _DesktopManualTokenHttpClient({
+    required this.accessToken,
+    this.refreshToken,
+    this.clientId,
+    this.clientSecret,
+  });
+
+  String accessToken;
+  final String? refreshToken;
+  final String? clientId;
+  final String? clientSecret;
+  final http.Client _inner = http.Client();
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    request.headers['Authorization'] = 'Bearer $accessToken';
+    return _inner.send(request);
+  }
+
+  @override
+  void close() {
+    _inner.close();
   }
 }
 

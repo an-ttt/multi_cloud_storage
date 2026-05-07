@@ -58,6 +58,55 @@ class MultiCloudStorage {
           clientId: clientId,
           redirectUri: redirectUri,
           scopes: scopes);
+
+  static Future<CloudStorageProvider?> connectToDropboxWithToken({
+    required String appKey,
+    required String appSecret,
+    required String redirectUri,
+    required String accessToken,
+    String? refreshToken,
+  }) =>
+      DropboxProvider.connectWithToken(
+          appKey: appKey,
+          appSecret: appSecret,
+          redirectUri: redirectUri,
+          accessToken: accessToken,
+          refreshToken: refreshToken);
+
+  static Future<CloudStorageProvider?> connectToOneDriveWithToken({
+    required String clientId,
+    required String redirectUri,
+    required String accessToken,
+    String? refreshToken,
+    int? expiresIn,
+  }) =>
+      OneDriveProvider.connectWithToken(
+          clientId: clientId,
+          redirectUri: redirectUri,
+          accessToken: accessToken,
+          refreshToken: refreshToken,
+          expiresIn: expiresIn);
+
+  static Future<CloudStorageProvider?> connectToGoogleDriveWithToken({
+    required String accessToken,
+    String? refreshToken,
+    String? clientId,
+    String? clientSecret,
+  }) {
+    if (Platform.isWindows || Platform.isLinux) {
+      return GoogleDriveProviderDesktop.connectWithToken(
+          accessToken: accessToken,
+          refreshToken: refreshToken,
+          clientId: clientId,
+          clientSecret: clientSecret);
+    } else {
+      return GoogleDriveProvider.connectWithToken(
+          accessToken: accessToken,
+          refreshToken: refreshToken,
+          clientId: clientId,
+          clientSecret: clientSecret);
+    }
+  }
 }
 
 enum CloudAccessType { appStorage, fullAccess }
