@@ -3,9 +3,9 @@ import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 import 'cloud_storage_provider.dart';
 import 'exceptions/no_connection_exception.dart';
 import 'multi_cloud_storage.dart';
@@ -18,18 +18,21 @@ class OneDriveProvider extends CloudStorageProvider {
   String? _refreshToken;
   DateTime? _tokenExpiry;
   late Dio _dio;
+  final _secureStorage = const FlutterSecureStorage();
+  String? _storageKeyPrefix;
 
   OneDriveProvider._({
     required this.clientId,
     required this.redirectUri,
   }) {
-    _dio = Dio();
+    _initializeDio();
   }
 
   static Future<OneDriveProvider?> connect({
     required String clientId,
     required String redirectUri,
     String? scopes,
+    String? storageKeyPrefix,
   }) async {
     if (clientId.trim().isEmpty) {
       throw ArgumentError(
@@ -43,6 +46,7 @@ class OneDriveProvider extends CloudStorageProvider {
         clientId: clientId,
         redirectUri: redirectUri,
       );
+      provider._storageKeyPrefix = storageKeyPrefix;
       final effectiveScopes = scopes ??
           "${MultiCloudStorage.cloudAccess == CloudAccessType.appStorage ? 'Files.ReadWrite.AppFolder' : 'Files.ReadWrite.All'} offline_access User.Read Sites.ReadWrite.All";
       await provider._authenticate(effectiveScopes);
@@ -63,6 +67,7 @@ class OneDriveProvider extends CloudStorageProvider {
     required String accessToken,
     String? refreshToken,
     int? expiresIn,
+    String? storageKeyPrefix,
   }) async {
     if (clientId.trim().isEmpty) {
       throw ArgumentError(
@@ -76,12 +81,14 @@ class OneDriveProvider extends CloudStorageProvider {
         clientId: clientId,
         redirectUri: redirectUri,
       );
+      provider._storageKeyPrefix = storageKeyPrefix;
       provider._accessToken = accessToken;
       provider._refreshToken = refreshToken;
       provider._tokenExpiry = expiresIn != null && expiresIn > 0
           ? DateTime.now().add(Duration(seconds: expiresIn))
-          : DateTime.now().add(const Duration(days: 365));
+          : DateTime.now().add(const Duration(hours: 1));
       provider._isAuthenticated = true;
+      await provider._saveTokens();
       debugPrint('OneDrive connectWithToken successful');
       return provider;
     } catch (e) {
@@ -90,11 +97,53 @@ class OneDriveProvider extends CloudStorageProvider {
     }
   }
 
+  static Future<OneDriveProvider?> loadFromStorage({
+    required String clientId,
+    required String redirectUri,
+    required String storageKeyPrefix,
+  }) async {
+    try {
+      final provider = OneDriveProvider._(
+        clientId: clientId,
+        redirectUri: redirectUri,
+      );
+      provider._storageKeyPrefix = storageKeyPrefix;
+      final accessTokenKey = '${storageKeyPrefix}access_token';
+      final refreshTokenKey = '${storageKeyPrefix}refresh_token';
+      final tokenExpiryKey = '${storageKeyPrefix}token_expiry';
+      final storedAccessToken = await provider._secureStorage.read(key: accessTokenKey);
+      final storedRefreshToken = await provider._secureStorage.read(key: refreshTokenKey);
+      final storedExpiry = await provider._secureStorage.read(key: tokenExpiryKey);
+      if (storedAccessToken == null) return null;
+      provider._accessToken = storedAccessToken;
+      provider._refreshToken = storedRefreshToken;
+      provider._tokenExpiry = storedExpiry != null ? DateTime.tryParse(storedExpiry) : null;
+      if (provider._tokenExpiry != null && provider._tokenExpiry!.isBefore(DateTime.now())) {
+        if (provider._refreshToken != null) {
+          try {
+            await provider._refreshAccessToken();
+          } catch (e) {
+            debugPrint('OneDrive loadFromStorage: token refresh failed: $e');
+            return null;
+          }
+        }
+      }
+      provider._isAuthenticated = true;
+      debugPrint('OneDrive loadFromStorage successful');
+      return provider;
+    } catch (e) {
+      debugPrint('OneDrive loadFromStorage failed: $e');
+      return null;
+    }
+  }
+
   Future<void> _authenticate(String scopes) async {
-    final prefs = await SharedPreferences.getInstance();
-    _accessToken = prefs.getString('onedrive_access_token');
-    _refreshToken = prefs.getString('onedrive_refresh_token');
-    final expiryString = prefs.getString('onedrive_token_expiry');
+    final accessTokenKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}access_token' : 'onedrive_access_token';
+    final refreshTokenKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}refresh_token' : 'onedrive_refresh_token';
+    final tokenExpiryKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}token_expiry' : 'onedrive_token_expiry';
+    _accessToken = await _secureStorage.read(key: accessTokenKey);
+    _refreshToken = await _secureStorage.read(key: refreshTokenKey);
+    final expiryString = await _secureStorage.read(key: tokenExpiryKey);
     if (expiryString != null) {
       _tokenExpiry = DateTime.parse(expiryString);
     }
@@ -183,22 +232,68 @@ class OneDriveProvider extends CloudStorageProvider {
     await _saveTokens();
   }
 
+  void _initializeDio() {
+    _dio = Dio(BaseOptions(
+      sendTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 30),
+    ));
+    _dio.interceptors.add(InterceptorsWrapper(
+      onRequest: (options, handler) {
+        if (_accessToken != null) {
+          options.headers['Authorization'] = 'Bearer $_accessToken';
+        }
+        return handler.next(options);
+      },
+      onError: (e, handler) async {
+        if (e.response?.statusCode == 401 && _refreshToken != null) {
+          debugPrint('OneDrive token expired (401). Attempting to refresh token.');
+          try {
+            await _refreshAccessToken();
+            debugPrint('OneDrive token refreshed successfully. Retrying original request.');
+            final response = await _dio.request(
+              e.requestOptions.path,
+              options: Options(
+                method: e.requestOptions.method,
+                headers: e.requestOptions.headers,
+              ),
+              data: e.requestOptions.data,
+              queryParameters: e.requestOptions.queryParameters,
+            );
+            return handler.resolve(response);
+          } catch (refreshError) {
+            debugPrint('Failed to refresh OneDrive token: $refreshError');
+            _isAuthenticated = false;
+            return handler.reject(e);
+          }
+        }
+        return handler.next(e);
+      },
+    ));
+  }
+
   Future<void> _saveTokens() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('onedrive_access_token', _accessToken ?? '');
+    final accessTokenKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}access_token' : 'onedrive_access_token';
+    final refreshTokenKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}refresh_token' : 'onedrive_refresh_token';
+    final tokenExpiryKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}token_expiry' : 'onedrive_token_expiry';
+    if (_accessToken != null) {
+      await _secureStorage.write(key: accessTokenKey, value: _accessToken!);
+    }
     if (_refreshToken != null) {
-      await prefs.setString('onedrive_refresh_token', _refreshToken!);
+      await _secureStorage.write(key: refreshTokenKey, value: _refreshToken!);
     }
     if (_tokenExpiry != null) {
-      await prefs.setString('onedrive_token_expiry', _tokenExpiry!.toIso8601String());
+      await _secureStorage.write(
+          key: tokenExpiryKey, value: _tokenExpiry!.toIso8601String());
     }
   }
 
   Future<void> _clearTokens() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('onedrive_access_token');
-    await prefs.remove('onedrive_refresh_token');
-    await prefs.remove('onedrive_token_expiry');
+    final accessTokenKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}access_token' : 'onedrive_access_token';
+    final refreshTokenKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}refresh_token' : 'onedrive_refresh_token';
+    final tokenExpiryKey = _storageKeyPrefix != null ? '${_storageKeyPrefix}token_expiry' : 'onedrive_token_expiry';
+    await _secureStorage.delete(key: accessTokenKey);
+    await _secureStorage.delete(key: refreshTokenKey);
+    await _secureStorage.delete(key: tokenExpiryKey);
     _accessToken = null;
     _refreshToken = null;
     _tokenExpiry = null;
@@ -212,19 +307,23 @@ class OneDriveProvider extends CloudStorageProvider {
     return _executeRequest(
       () async {
         final effectivePath = path.isEmpty ? '/' : path;
-        final encodedPath = Uri.encodeComponent(effectivePath.startsWith('/') ? effectivePath.substring(1) : effectivePath);
-        String url;
-        if (recursive) {
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType&\$expand=children';
-        } else {
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
-        }
+        final encodedPath = _encodePath(effectivePath);
+        final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
         final response = await _dio.get(
           url,
-          options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
         );
         final List<dynamic> items = response.data['value'];
-        return items.map((item) => _mapToCloudFile(item)).toList();
+        final cloudFiles = items.map((item) => _mapToCloudFile(item)).toList();
+        if (recursive) {
+          final List<CloudFile> subFolderFiles = [];
+          for (final cf in cloudFiles) {
+            if (cf.isDirectory) {
+              subFolderFiles.addAll(await listFiles(path: cf.path, recursive: true));
+            }
+          }
+          cloudFiles.addAll(subFolderFiles);
+        }
+        return cloudFiles;
       },
       operation: 'listFiles at $path',
     );
@@ -255,12 +354,11 @@ class OneDriveProvider extends CloudStorageProvider {
   }) {
     return _executeRequest(
       () async {
-        final encodedPath = Uri.encodeComponent(remotePath.startsWith('/') ? remotePath.substring(1) : remotePath);
+        final encodedPath = _encodePath(remotePath);
         final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
         await _dio.download(
           url,
           localPath,
-          options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
         );
         return localPath;
       },
@@ -278,14 +376,13 @@ class OneDriveProvider extends CloudStorageProvider {
       () async {
         final file = File(localPath);
         final bytes = await file.readAsBytes();
-        final encodedPath = Uri.encodeComponent(remotePath.startsWith('/') ? remotePath.substring(1) : remotePath);
+        final encodedPath = _encodePath(remotePath);
         final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
         await _dio.put(
           url,
           data: bytes,
           options: Options(
             headers: {
-              'Authorization': 'Bearer $_accessToken',
               'Content-Type': 'application/octet-stream',
             },
           ),
@@ -300,11 +397,10 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<void> deleteFile(String path) {
     return _executeRequest(
       () async {
-        final encodedPath = Uri.encodeComponent(path.startsWith('/') ? path.substring(1) : path);
+        final encodedPath = _encodePath(path);
         final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath';
         await _dio.delete(
           url,
-          options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
         );
       },
       operation: 'deleteFile at $path',
@@ -321,7 +417,7 @@ class OneDriveProvider extends CloudStorageProvider {
         if (parentPath.isEmpty) {
           url = 'https://graph.microsoft.com/v1.0/me/drive/root/children';
         } else {
-          final encodedParentPath = Uri.encodeComponent(parentPath.startsWith('/') ? parentPath.substring(1) : parentPath);
+          final encodedParentPath = _encodePath(parentPath);
           url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedParentPath/children';
         }
         await _dio.post(
@@ -331,7 +427,6 @@ class OneDriveProvider extends CloudStorageProvider {
             'folder': {},
             '@microsoft.graph.conflictBehavior': 'fail',
           },
-          options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
         );
       },
       operation: 'createDirectory at $path',
@@ -342,11 +437,10 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<CloudFile> getFileMetadata(String path) {
     return _executeRequest(
       () async {
-        final encodedPath = Uri.encodeComponent(path.startsWith('/') ? path.substring(1) : path);
+        final encodedPath = _encodePath(path);
         final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
         final response = await _dio.get(
           url,
-          options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
         );
         return _mapToCloudFile(response.data);
       },
@@ -360,7 +454,6 @@ class OneDriveProvider extends CloudStorageProvider {
       () async {
         final response = await _dio.get(
           'https://graph.microsoft.com/v1.0/me',
-          options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
         );
         String? name = response.data['displayName'] as String?;
         if (name?.trim().isEmpty ?? true) {
@@ -379,13 +472,12 @@ class OneDriveProvider extends CloudStorageProvider {
     required int length,
   }) {
     return _executeRequest(() async {
-      final encodedPath = Uri.encodeComponent(path.startsWith('/') ? path.substring(1) : path);
+      final encodedPath = _encodePath(path);
       final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
       final response = await _dio.get(
         url,
         options: Options(
           headers: {
-            'Authorization': 'Bearer $_accessToken',
             'Range': 'bytes=$offset-${offset + length - 1}',
           },
           responseType: ResponseType.bytes,
@@ -398,11 +490,10 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<String?> getDownloadUrl(String path) {
     return _executeRequest(() async {
-      final encodedPath = Uri.encodeComponent(path.startsWith('/') ? path.substring(1) : path);
+      final encodedPath = _encodePath(path);
       final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=@content.downloadUrl';
       final response = await _dio.get(
         url,
-        options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
       );
       return response.data['@content.downloadUrl'] as String?;
     }, operation: 'getDownloadUrl for $path');
@@ -420,11 +511,16 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
+  Future<String?> getRefreshToken() async => _refreshToken;
+
+  @override
+  Future<DateTime?> getTokenExpiry() async => _tokenExpiry;
+
+  @override
   Future<String?> loggedInUserEmail() {
     return _executeRequest(() async {
       final response = await _dio.get(
         'https://graph.microsoft.com/v1.0/me',
-        options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
       );
       return response.data['mail'] as String? ?? response.data['userPrincipalName'] as String?;
     }, operation: 'loggedInUserEmail');
@@ -435,10 +531,21 @@ class OneDriveProvider extends CloudStorageProvider {
     return _executeRequest(() async {
       final response = await _dio.get(
         'https://graph.microsoft.com/v1.0/me',
-        options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
       );
       return response.data['id'] as String?;
     }, operation: 'loggedInUserId');
+  }
+
+  @override
+  Future<bool> refreshAccessToken() async {
+    if (_refreshToken == null) return false;
+    try {
+      await _refreshAccessToken();
+      return true;
+    } catch (e) {
+      debugPrint('OneDrive refreshAccessToken failed: $e');
+      return false;
+    }
   }
 
   @override
@@ -450,7 +557,6 @@ class OneDriveProvider extends CloudStorageProvider {
     try {
       await _dio.get(
         'https://graph.microsoft.com/v1.0/me/drive/root/children?\$select=id&\$top=1',
-        options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
       );
       return false;
     } catch (e) {
@@ -461,18 +567,14 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<bool> logout() async {
     debugPrint("Logging out from OneDrive...");
-    if (_isAuthenticated) {
-      try {
-        await _clearTokens();
-        _isAuthenticated = false;
-        return true;
-      } catch (error) {
-        debugPrint("Error during OneDrive logout: $error");
-        return false;
-      }
+    try {
+      await _clearTokens();
+      _isAuthenticated = false;
+      return true;
+    } catch (error) {
+      debugPrint("Error during OneDrive logout: $error");
+      return false;
     }
-    await _clearTokens();
-    return false;
   }
 
   @override
@@ -484,7 +586,6 @@ class OneDriveProvider extends CloudStorageProvider {
         final response = await _dio.post(
           url,
           data: {"type": "edit", "scope": "anonymous"},
-          options: Options(headers: {'Authorization': 'Bearer $_accessToken'}),
         );
         final link = response.data['link']?['webUrl'] as String?;
         return link != null ? Uri.parse(link) : null;
@@ -531,7 +632,6 @@ class OneDriveProvider extends CloudStorageProvider {
           data: fileBytes,
           options: Options(
             headers: {
-              'Authorization': 'Bearer $_accessToken',
               'Content-Type': 'application/octet-stream',
             },
           ),
@@ -553,12 +653,17 @@ class OneDriveProvider extends CloudStorageProvider {
     } on SocketException catch (e) {
       debugPrint('No connection detected.');
       throw NoConnectionException(e.message);
+    } on DioException catch (e) {
+      if (e.error is SocketException) {
+        throw NoConnectionException(e.message ?? e.toString());
+      }
+      if (e.response?.statusCode == 401) {
+        _isAuthenticated = false;
+        debugPrint('OneDrive token appears to be expired after refresh attempt. User re-authentication is required.');
+      }
+      rethrow;
     } catch (e) {
       debugPrint('Error during OneDrive operation: $operation: $e');
-      if (e.toString().contains('401') || e.toString().contains('invalid_grant')) {
-        _isAuthenticated = false;
-        debugPrint('OneDrive token appears to be expired. User re-authentication is required.');
-      }
       rethrow;
     }
   }
@@ -576,7 +681,6 @@ class OneDriveProvider extends CloudStorageProvider {
       url,
       options: Options(
         headers: {
-          'Authorization': 'Bearer $_accessToken',
           'Prefer': 'redeemSharingLink',
         },
       ),
@@ -597,6 +701,12 @@ class OneDriveProvider extends CloudStorageProvider {
   String _encodeShareUrlForGraphAPI(String url) {
     final base64UrlString = base64Url.encode(utf8.encode(url));
     return 'u!$base64UrlString';
+  }
+
+  String _encodePath(String path) {
+    final cleanPath = path.startsWith('/') ? path.substring(1) : path;
+    if (cleanPath.isEmpty) return '';
+    return cleanPath.split('/').map(Uri.encodeComponent).join('/');
   }
 }
 

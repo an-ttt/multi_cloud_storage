@@ -24,6 +24,7 @@ class DropboxProvider extends CloudStorageProvider {
   // --- Token storage ---
   final _secureStorage = const FlutterSecureStorage();
   static const _kDropboxTokenKey = 'dropbox_token';
+  String? _storageKeyPrefix;
 
   late Dio _dio;
   DropboxToken? _token;
@@ -50,6 +51,7 @@ class DropboxProvider extends CloudStorageProvider {
     required String appSecret,
     required String redirectUri,
     bool forceInteractive = false,
+    String? storageKeyPrefix,
   }) async {
     debugPrint('connect Dropbox, forceInteractive: $forceInteractive');
     if (appKey.isEmpty || appSecret.isEmpty || redirectUri.isEmpty) {
@@ -60,6 +62,7 @@ class DropboxProvider extends CloudStorageProvider {
     try {
       final provider = DropboxProvider._create(
           appKey: appKey, appSecret: appSecret, redirectUri: redirectUri);
+      provider._storageKeyPrefix = storageKeyPrefix;
       // If interactive login is forced, clear any existing credentials.
       if (forceInteractive) {
         debugPrint('Forcing interactive login, clearing existing token.');
@@ -85,6 +88,7 @@ class DropboxProvider extends CloudStorageProvider {
       final authCode = await provider._getAuthCodeViaInteractiveFlow();
       if (authCode == null) {
         debugPrint('Interactive Dropbox login cancelled by user.');
+        provider._pkceCodeVerifier = null;
         return null;
       }
       await provider._completeConnection(authCode);
@@ -108,6 +112,8 @@ class DropboxProvider extends CloudStorageProvider {
     required String redirectUri,
     required String accessToken,
     String? refreshToken,
+    int? expiresIn,
+    String? storageKeyPrefix,
   }) async {
     if (appKey.isEmpty || redirectUri.isEmpty) {
       debugPrint(
@@ -117,13 +123,17 @@ class DropboxProvider extends CloudStorageProvider {
     try {
       final provider = DropboxProvider._create(
           appKey: appKey, appSecret: appSecret, redirectUri: redirectUri);
+      provider._storageKeyPrefix = storageKeyPrefix;
       provider._token = DropboxToken(
         accessToken: accessToken,
         refreshToken: refreshToken,
         tokenType: 'bearer',
-        expiresIn: DateTime.now().add(const Duration(days: 365)),
+        expiresIn: expiresIn != null && expiresIn > 0
+            ? DateTime.now().add(Duration(seconds: expiresIn))
+            : DateTime.now().add(const Duration(hours: 4)),
       );
       provider._isAuthenticated = true;
+      await provider._saveToken(provider._token);
       try {
         await provider._fetchCurrentUserAccount();
       } catch (e) {
@@ -134,6 +144,42 @@ class DropboxProvider extends CloudStorageProvider {
     } catch (error) {
       debugPrint('Error occurred during Dropbox connectWithToken: $error');
       rethrow;
+    }
+  }
+
+  static Future<DropboxProvider?> loadFromStorage({
+    required String appKey,
+    required String appSecret,
+    required String redirectUri,
+    required String storageKeyPrefix,
+  }) async {
+    try {
+      final provider = DropboxProvider._create(
+          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri);
+      provider._storageKeyPrefix = storageKeyPrefix;
+      final token = await provider._getToken();
+      if (token == null) return null;
+      provider._token = token;
+      if (token.isExpired && token.refreshToken != null) {
+        try {
+          await provider._refreshToken();
+          await provider._saveToken(provider._token);
+        } catch (e) {
+          debugPrint('Dropbox loadFromStorage: token refresh failed: $e');
+          return null;
+        }
+      }
+      try {
+        await provider._fetchCurrentUserAccount();
+      } catch (e) {
+        debugPrint('Dropbox loadFromStorage: fetch user account failed: $e');
+      }
+      provider._isAuthenticated = true;
+      debugPrint('Dropbox loadFromStorage successful for ${provider._account?.email}');
+      return provider;
+    } catch (e) {
+      debugPrint('Dropbox loadFromStorage failed: $e');
+      return null;
     }
   }
 
@@ -347,13 +393,39 @@ class DropboxProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> getAccessToken() async => _token?.accessToken;
+  Future<String?> getAccessToken() async {
+    if (_token == null) return null;
+    if (_token!.isExpired && _token!.refreshToken != null) {
+      await _refreshToken();
+      await _saveToken(_token);
+    }
+    return _token!.accessToken;
+  }
+
+  @override
+  Future<String?> getRefreshToken() async => _token?.refreshToken;
+
+  @override
+  Future<DateTime?> getTokenExpiry() async => _token?.expiresIn;
 
   @override
   Future<String?> loggedInUserEmail() async => _account?.email;
 
   @override
   Future<String?> loggedInUserId() async => _account?.accountId;
+
+  @override
+  Future<bool> refreshAccessToken() async {
+    if (_token?.refreshToken == null) return false;
+    try {
+      await _refreshToken();
+      await _saveToken(_token);
+      return true;
+    } catch (e) {
+      debugPrint('Dropbox refreshAccessToken failed: $e');
+      return false;
+    }
+  }
 
   /// Checks if the current user's authentication token is expired.
   @override
@@ -542,15 +614,18 @@ class DropboxProvider extends CloudStorageProvider {
       throw Exception('No Dropbox refresh token available.');
     }
     debugPrint('Executing Dropbox token refresh request.');
-    final dioForToken = Dio(); // Use a clean Dio instance for auth.
+    final dioForToken = Dio();
+    final body = {
+      'grant_type': 'refresh_token',
+      'refresh_token': _token!.refreshToken,
+      'client_id': _appKey,
+    };
+    if (_appSecret.isNotEmpty) {
+      body['client_secret'] = _appSecret;
+    }
     final response = await dioForToken.post(
       'https://api.dropboxapi.com/oauth2/token',
-      data: {
-        'grant_type': 'refresh_token',
-        'refresh_token': _token!.refreshToken,
-        'client_id': _appKey,
-        'client_secret': _appSecret,
-      },
+      data: body,
       options: Options(contentType: 'application/x-www-form-urlencoded'),
     );
     final newPartialToken = DropboxToken.fromJson(response.data);
@@ -609,7 +684,14 @@ class DropboxProvider extends CloudStorageProvider {
       debugPrint(errorMsg);
       if (!codeCompleter.isCompleted) codeCompleter.completeError(errorMsg);
     }
-    return codeCompleter.future;
+    return codeCompleter.future.timeout(
+      const Duration(minutes: 5),
+      onTimeout: () {
+        debugPrint('Dropbox auth flow timed out after 5 minutes.');
+        linkSub?.cancel();
+        return null;
+      },
+    );
   }
 
   /// Exchanges the authorization code for an access token.
@@ -640,14 +722,19 @@ class DropboxProvider extends CloudStorageProvider {
   /// Saves the token securely to the device's storage.
   Future<void> _saveToken(DropboxToken? token) async {
     if (token == null) return _clearToken();
+    final key = _storageKeyPrefix != null
+        ? '${_storageKeyPrefix}token'
+        : _kDropboxTokenKey;
     final tokenJson = jsonEncode(token.toJson());
-    await _secureStorage.write(key: _kDropboxTokenKey, value: tokenJson);
+    await _secureStorage.write(key: key, value: tokenJson);
     debugPrint('Dropbox token saved to secure storage.');
   }
 
-  /// Retrieves the token from secure storage.
   Future<DropboxToken?> _getToken() async {
-    final tokenJson = await _secureStorage.read(key: _kDropboxTokenKey);
+    final key = _storageKeyPrefix != null
+        ? '${_storageKeyPrefix}token'
+        : _kDropboxTokenKey;
+    final tokenJson = await _secureStorage.read(key: key);
     if (tokenJson == null) {
       debugPrint('No Dropbox token found in secure storage.');
       return null;
@@ -662,9 +749,11 @@ class DropboxProvider extends CloudStorageProvider {
     }
   }
 
-  /// Deletes the token from secure storage.
   Future<void> _clearToken() async {
-    await _secureStorage.delete(key: _kDropboxTokenKey);
+    final key = _storageKeyPrefix != null
+        ? '${_storageKeyPrefix}token'
+        : _kDropboxTokenKey;
+    await _secureStorage.delete(key: key);
     debugPrint('Cleared Dropbox token from secure storage.');
   }
 
@@ -688,7 +777,7 @@ class DropboxProvider extends CloudStorageProvider {
       isDirectory: isDir,
       metadata: {'id': data['id'], if (!isDir) 'rev': data['rev']},
       id: data['id'],
-      mimeType: isDir ? 'application/vnd.google-apps.folder' : null,
+      mimeType: isDir ? null : null,
     );
   }
 

@@ -8,6 +8,8 @@ import 'package:multi_cloud_storage/onedrive_provider.dart';
 
 import 'dropbox_provider.dart';
 
+enum CloudStorageType { dropbox, oneDrive, googleDrive, icloud }
+
 class MultiCloudStorage {
   static CloudAccessType cloudAccess = CloudAccessType.appStorage;
 
@@ -15,12 +17,14 @@ class MultiCloudStorage {
           {required String appKey,
           required String appSecret,
           required String redirectUri,
-          bool forceInteractive = false}) =>
+          bool forceInteractive = false,
+          String? storageKeyPrefix}) =>
       DropboxProvider.connect(
           appKey: appKey,
           appSecret: appSecret,
           redirectUri: redirectUri,
-          forceInteractive: forceInteractive);
+          forceInteractive: forceInteractive,
+          storageKeyPrefix: storageKeyPrefix);
 
   static Future<CloudStorageProvider?> connectToGoogleDrive(
           {bool forceInteractive = false,
@@ -53,11 +57,13 @@ class MultiCloudStorage {
     required String clientId,
     required String redirectUri,
     String? scopes,
+    String? storageKeyPrefix,
   }) =>
       OneDriveProvider.connect(
           clientId: clientId,
           redirectUri: redirectUri,
-          scopes: scopes);
+          scopes: scopes,
+          storageKeyPrefix: storageKeyPrefix);
 
   static Future<CloudStorageProvider?> connectToDropboxWithToken({
     required String appKey,
@@ -65,13 +71,17 @@ class MultiCloudStorage {
     required String redirectUri,
     required String accessToken,
     String? refreshToken,
+    int? expiresIn,
+    String? storageKeyPrefix,
   }) =>
       DropboxProvider.connectWithToken(
           appKey: appKey,
           appSecret: appSecret,
           redirectUri: redirectUri,
           accessToken: accessToken,
-          refreshToken: refreshToken);
+          refreshToken: refreshToken,
+          expiresIn: expiresIn,
+          storageKeyPrefix: storageKeyPrefix);
 
   static Future<CloudStorageProvider?> connectToOneDriveWithToken({
     required String clientId,
@@ -79,32 +89,85 @@ class MultiCloudStorage {
     required String accessToken,
     String? refreshToken,
     int? expiresIn,
+    String? storageKeyPrefix,
   }) =>
       OneDriveProvider.connectWithToken(
           clientId: clientId,
           redirectUri: redirectUri,
           accessToken: accessToken,
           refreshToken: refreshToken,
-          expiresIn: expiresIn);
+          expiresIn: expiresIn,
+          storageKeyPrefix: storageKeyPrefix);
 
   static Future<CloudStorageProvider?> connectToGoogleDriveWithToken({
     required String accessToken,
     String? refreshToken,
     String? clientId,
     String? clientSecret,
+    int? expiresIn,
+    String? storageKeyPrefix,
   }) {
     if (Platform.isWindows || Platform.isLinux) {
       return GoogleDriveProviderDesktop.connectWithToken(
           accessToken: accessToken,
           refreshToken: refreshToken,
           clientId: clientId,
-          clientSecret: clientSecret);
+          clientSecret: clientSecret,
+          expiresIn: expiresIn,
+          storageKeyPrefix: storageKeyPrefix);
     } else {
       return GoogleDriveProvider.connectWithToken(
           accessToken: accessToken,
           refreshToken: refreshToken,
           clientId: clientId,
-          clientSecret: clientSecret);
+          clientSecret: clientSecret,
+          expiresIn: expiresIn,
+          storageKeyPrefix: storageKeyPrefix);
+    }
+  }
+
+  static Future<CloudStorageProvider?> loadFromStorage({
+    required CloudStorageType type,
+    required String storageKeyPrefix,
+    String? appKey,
+    String? appSecret,
+    String? redirectUri,
+    String? clientId,
+    String? clientSecret,
+  }) async {
+    switch (type) {
+      case CloudStorageType.dropbox:
+        if (appKey == null || appSecret == null || redirectUri == null) return null;
+        return DropboxProvider.loadFromStorage(
+          appKey: appKey,
+          appSecret: appSecret,
+          redirectUri: redirectUri,
+          storageKeyPrefix: storageKeyPrefix,
+        );
+      case CloudStorageType.oneDrive:
+        if (clientId == null || redirectUri == null) return null;
+        return OneDriveProvider.loadFromStorage(
+          clientId: clientId,
+          redirectUri: redirectUri,
+          storageKeyPrefix: storageKeyPrefix,
+        );
+      case CloudStorageType.googleDrive:
+        if (clientId == null) return null;
+        if (Platform.isWindows || Platform.isLinux) {
+          return GoogleDriveProviderDesktop.loadFromStorage(
+            clientId: clientId,
+            clientSecret: clientSecret,
+            storageKeyPrefix: storageKeyPrefix,
+          );
+        } else {
+          return GoogleDriveProvider.loadFromStorage(
+            clientId: clientId,
+            clientSecret: clientSecret,
+            storageKeyPrefix: storageKeyPrefix,
+          );
+        }
+      case CloudStorageType.icloud:
+        return null;
     }
   }
 }

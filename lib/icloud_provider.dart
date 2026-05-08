@@ -298,6 +298,12 @@ class ICloudProvider extends CloudStorageProvider {
   }
 
   @override
+  Future<String?> getRefreshToken() async => null;
+
+  @override
+  Future<DateTime?> getTokenExpiry() async => null;
+
+  @override
   Future<String?> loggedInUserEmail() async {
     return null;
   }
@@ -306,4 +312,7 @@ class ICloudProvider extends CloudStorageProvider {
   Future<String?> loggedInUserId() async {
     return null;
   }
+
+  @override
+  Future<bool> refreshAccessToken() async => true;
 }

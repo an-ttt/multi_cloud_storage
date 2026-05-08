@@ -4,9 +4,11 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_sign_in_all_platforms/google_sign_in_all_platforms.dart'
     as all_platforms;
 import 'package:googleapis/drive/v3.dart' as drive;
+import 'package:googleapis_auth/googleapis_auth.dart' show AccessDeniedException;
 import 'package:http/http.dart' as http;
 import 'package:http/http.dart' as client;
 import 'package:http/retry.dart';
@@ -23,6 +25,13 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
 
   static GoogleDriveProviderDesktop? get instance => _instance;
   String? _accessToken;
+  String? _storageKeyPrefix;
+  String? _manualRefreshToken;
+  DateTime? _manualTokenExpiry;
+  _DesktopManualTokenHttpClient? _desktopManualTokenHttpClient;
+  static const FlutterSecureStorage _secureStorage = FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   /// Connects to Google Drive, authenticating the user.
   ///
@@ -128,15 +137,25 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     String? refreshToken,
     String? clientId,
     String? clientSecret,
+    int? expiresIn,
+    String? storageKeyPrefix,
   }) async {
     debugPrint('connectWithToken Google Drive Desktop');
     try {
+      final provider = _instance ?? GoogleDriveProviderDesktop.internal();
       final httpClient = _DesktopManualTokenHttpClient(
         accessToken: accessToken,
         refreshToken: refreshToken,
         clientId: clientId,
         clientSecret: clientSecret,
+        onTokenRefreshed: (newToken) {
+          provider._accessToken = newToken;
+          if (provider._storageKeyPrefix != null) {
+            _secureStorage.write(key: '${provider._storageKeyPrefix}access_token', value: newToken);
+          }
+        },
       );
+      provider._desktopManualTokenHttpClient = httpClient;
       final retryClient = RetryClient(
         httpClient,
         retries: 3,
@@ -144,14 +163,67 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
         onRetry: (request, response, retryCount) => debugPrint(
             'Retrying request to ${request.url} (Retry #$retryCount)'),
       );
-      final provider = _instance ?? GoogleDriveProviderDesktop.internal();
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
       provider._accessToken = accessToken;
+      provider._storageKeyPrefix = storageKeyPrefix;
+      provider._manualRefreshToken = refreshToken;
+      provider._manualTokenExpiry = expiresIn != null && expiresIn > 0
+          ? DateTime.now().add(Duration(seconds: expiresIn))
+          : null;
+      _instance = provider;
+      // Persist tokens to secure storage
+      if (storageKeyPrefix != null) {
+        await _secureStorage.write(key: '${storageKeyPrefix}access_token', value: accessToken);
+        if (refreshToken != null) {
+          await _secureStorage.write(key: '${storageKeyPrefix}refresh_token', value: refreshToken);
+        }
+        if (provider._manualTokenExpiry != null) {
+          await _secureStorage.write(key: '${storageKeyPrefix}token_expiry', value: provider._manualTokenExpiry!.toIso8601String());
+        }
+        if (clientId != null) {
+          await _secureStorage.write(key: '${storageKeyPrefix}client_id', value: clientId);
+        }
+        if (clientSecret != null) {
+          await _secureStorage.write(key: '${storageKeyPrefix}client_secret', value: clientSecret);
+        }
+      }
       debugPrint('Google Drive Desktop connectWithToken successful');
       return provider;
     } catch (error) {
       debugPrint('Error occurred during Google Drive Desktop connectWithToken: $error');
+      return null;
+    }
+  }
+
+  static Future<GoogleDriveProvider?> loadFromStorage({
+    required String clientId,
+    String? clientSecret,
+    required String storageKeyPrefix,
+  }) async {
+    try {
+      final storedAccessToken = await _secureStorage.read(key: '${storageKeyPrefix}access_token');
+      final storedRefreshToken = await _secureStorage.read(key: '${storageKeyPrefix}refresh_token');
+      final storedExpiry = await _secureStorage.read(key: '${storageKeyPrefix}token_expiry');
+      final storedClientId = await _secureStorage.read(key: '${storageKeyPrefix}client_id') ?? clientId;
+      final storedClientSecret = await _secureStorage.read(key: '${storageKeyPrefix}client_secret') ?? clientSecret;
+      if (storedAccessToken == null) return null;
+      int? expiresIn;
+      if (storedExpiry != null) {
+        final expiry = DateTime.parse(storedExpiry);
+        expiresIn = expiry.difference(DateTime.now()).inSeconds;
+        if (expiresIn < 0) expiresIn = null;
+      }
+      return connectWithToken(
+        accessToken: storedAccessToken,
+        refreshToken: storedRefreshToken,
+        clientId: storedClientId,
+        clientSecret: storedClientSecret,
+        storageKeyPrefix: storageKeyPrefix,
+        expiresIn: expiresIn,
+      );
+    } catch (e) {
+      debugPrint('Google Drive Desktop loadFromStorage failed: $e');
       return null;
     }
   }
@@ -161,6 +233,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     try {
       final response = await client.get(
         Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+        headers: {'Authorization': 'Bearer $_accessToken'},
       );
 
       if (response.statusCode == 200) {
@@ -181,6 +254,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     try {
       final response = await client.get(
         Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+        headers: {'Authorization': 'Bearer $_accessToken'},
       );
       if (response.statusCode == 200) {
         final userInfo = jsonDecode(response.body);
@@ -197,6 +271,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     try {
       final response = await client.get(
         Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+        headers: {'Authorization': 'Bearer $_accessToken'},
       );
       if (response.statusCode == 200) {
         final userInfo = jsonDecode(response.body);
@@ -225,33 +300,64 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     }
   }
 
-  /// A helper to handle auth errors by reconnecting and retrying the request.
-  ///
-  /// This is called when a 401/403 error occurs, indicating an expired token.
-  /// It attempts a silent reconnect to refresh the token and then retries the
-  /// original function `request`.
   @override
   Future<T> handleAuthErrorAndRetry<T>(
-      Future<T> Function() request, Object error, StackTrace stackTrace) async {
+      Future<T> Function() request, Object error, StackTrace stackTrace, {int authRetryCount = 0}) async {
+    if (authRetryCount >= 1) {
+      debugPrint('Auth retry limit reached. Throwing original error.');
+      throw error;
+    }
     debugPrint('Authentication error occurred. Attempting to reconnect...');
     isAuthenticated = false;
-    // Silently try to reconnect to refresh the auth token.
     final reconnectedProvider = await GoogleDriveProviderDesktop.connect();
     if (reconnectedProvider != null && reconnectedProvider.isAuthenticated) {
       debugPrint('Successfully reconnected. Retrying the original request.');
-      // Retry the original request closure.
-      return await request();
+      try {
+        return await request();
+      } on drive.DetailedApiRequestError catch (e) {
+        if (e.status == 401 || e.status == 403) {
+          debugPrint('Auth retry limit reached after reconnect. Throwing original error.');
+          throw error;
+        }
+        rethrow;
+      } on AccessDeniedException {
+        debugPrint('Auth retry limit reached after reconnect. Throwing original error.');
+        throw error;
+      }
     } else {
       debugPrint(
           'Failed to reconnect after auth error. Throwing original error.');
-      // If reconnection fails, rethrow the original error to the caller.
       throw error;
     }
   }
 
   @override
   Future<String?> getAccessToken() async {
+    if (_desktopManualTokenHttpClient != null) {
+      if (_manualTokenExpiry != null &&
+          DateTime.now().isAfter(_manualTokenExpiry!.subtract(const Duration(minutes: 5)))) {
+        await _desktopManualTokenHttpClient!.refresh();
+      }
+      return _desktopManualTokenHttpClient!.accessToken;
+    }
     return _accessToken;
+  }
+
+  @override
+  Future<String?> getRefreshToken() async => _manualRefreshToken;
+
+  @override
+  Future<DateTime?> getTokenExpiry() async => _manualTokenExpiry;
+
+  @override
+  Future<bool> refreshAccessToken() async {
+    if (_desktopManualTokenHttpClient != null) {
+      return _desktopManualTokenHttpClient!.refresh();
+    }
+    if (_accessToken != null) {
+      return true;
+    }
+    return false;
   }
 }
 
@@ -261,18 +367,83 @@ class _DesktopManualTokenHttpClient extends http.BaseClient {
     this.refreshToken,
     this.clientId,
     this.clientSecret,
+    this.onTokenRefreshed,
   });
 
   String accessToken;
   final String? refreshToken;
   final String? clientId;
   final String? clientSecret;
+  final void Function(String newAccessToken)? onTokenRefreshed;
   final http.Client _inner = http.Client();
+  bool _isRefreshing = false;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     request.headers['Authorization'] = 'Bearer $accessToken';
-    return _inner.send(request);
+    final response = await _inner.send(request);
+
+    if (response.statusCode == 401 && refreshToken != null && clientId != null && !_isRefreshing) {
+      final refreshed = await _refreshAccessToken();
+      if (refreshed) {
+        final retryRequest = _copyRequest(request);
+        retryRequest.headers['Authorization'] = 'Bearer $accessToken';
+        return _inner.send(retryRequest);
+      }
+    }
+
+    return response;
+  }
+
+  Future<bool> _refreshAccessToken() async {
+    if (refreshToken == null || clientId == null) return false;
+    _isRefreshing = true;
+    try {
+      final body = {
+        'grant_type': 'refresh_token',
+        'refresh_token': refreshToken,
+        'client_id': clientId!,
+      };
+      if (clientSecret != null && clientSecret!.isNotEmpty) {
+        body['client_secret'] = clientSecret!;
+      }
+      final response = await http.post(
+        Uri.parse('https://oauth2.googleapis.com/token'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: body,
+      );
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        accessToken = json['access_token'] as String;
+        debugPrint('Google Drive Desktop manual token client: access token refreshed successfully.');
+        onTokenRefreshed?.call(accessToken);
+        return true;
+      } else {
+        debugPrint('Google Drive Desktop manual token client: token refresh failed: ${response.statusCode}');
+        return false;
+      }
+    } catch (e) {
+      debugPrint('Google Drive Desktop manual token client: token refresh error: $e');
+      return false;
+    } finally {
+      _isRefreshing = false;
+    }
+  }
+
+  Future<bool> refresh() => _refreshAccessToken();
+
+  http.Request _copyRequest(http.BaseRequest original) {
+    if (original is! http.Request) {
+      throw StateError('Cannot copy non-Request BaseRequest');
+    }
+    final copy = http.Request(original.method, original.url);
+    copy.headers.addAll(original.headers);
+    copy.bodyBytes = original.bodyBytes;
+    copy.encoding = original.encoding;
+    copy.followRedirects = original.followRedirects;
+    copy.maxRedirects = original.maxRedirects;
+    copy.persistentConnection = original.persistentConnection;
+    return copy;
   }
 
   @override

@@ -65,6 +65,13 @@ abstract class CloudStorageProvider {
 
   Future<String?> getAccessToken();
 
+  Future<String?> getRefreshToken();
+
+  Future<DateTime?> getTokenExpiry();
+
+  /// Forces a token refresh. Returns true if successful.
+  Future<bool> refreshAccessToken();
+
   Future<String?> loggedInUserEmail();
 
   Future<String?> loggedInUserId();
