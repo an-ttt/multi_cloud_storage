@@ -3,13 +3,12 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:app_links/app_links.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:path/path.dart' as p;
-import 'package:url_launcher/url_launcher.dart';
 
 import 'cloud_storage_provider.dart';
 import 'exceptions/no_connection_exception.dart';
@@ -654,44 +653,26 @@ class DropboxProvider extends CloudStorageProvider {
   /// Manages the interactive OAuth2 flow using a web view and app links.
   Future<String?> _getAuthCodeViaInteractiveFlow() async {
     final authUrl = _getAuthorizationUrl();
-    final uri = Uri.parse(authUrl);
-    final codeCompleter = Completer<String?>();
-    final appLinks = AppLinks();
-    StreamSubscription? linkSub;
-
-    // Listen for the redirect URI from the OS.
-    linkSub = appLinks.uriLinkStream.listen((Uri? link) {
-      if (link != null && link.toString().startsWith(_redirectUri)) {
-        linkSub?.cancel();
-        final code = link.queryParameters['code'];
-        if (code != null) {
-          debugPrint('Received authorization code from redirect.');
-          if (!codeCompleter.isCompleted) codeCompleter.complete(code);
-        } else {
-          final error =
-              link.queryParameters['error_description'] ?? 'Unknown error';
-          debugPrint('Dropbox auth failed from redirect: $error');
-          if (!codeCompleter.isCompleted) codeCompleter.complete(null);
-        }
-      }
-    });
-    // Launch the auth URL in a web view.
+    final callbackScheme = _redirectUri.split('://')[0];
     debugPrint('Launching Dropbox authorization URL: $authUrl');
-    if (!await launchUrl(uri,
-        webViewConfiguration: const WebViewConfiguration())) {
-      linkSub.cancel();
-      const errorMsg = 'Could not launch Dropbox auth URL';
-      debugPrint(errorMsg);
-      if (!codeCompleter.isCompleted) codeCompleter.completeError(errorMsg);
-    }
-    return codeCompleter.future.timeout(
-      const Duration(minutes: 5),
-      onTimeout: () {
-        debugPrint('Dropbox auth flow timed out after 5 minutes.');
-        linkSub?.cancel();
+    try {
+      final result = await FlutterWebAuth2.authenticate(
+        url: authUrl,
+        callbackUrlScheme: callbackScheme,
+      );
+      final code = Uri.parse(result).queryParameters['code'];
+      if (code != null) {
+        debugPrint('Received authorization code from redirect.');
+        return code;
+      } else {
+        final error = Uri.parse(result).queryParameters['error_description'] ?? 'Unknown error';
+        debugPrint('Dropbox auth failed from redirect: $error');
         return null;
-      },
-    );
+      }
+    } catch (e) {
+      debugPrint('Dropbox interactive auth error: $e');
+      return null;
+    }
   }
 
   /// Exchanges the authorization code for an access token.

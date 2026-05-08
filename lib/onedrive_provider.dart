@@ -175,9 +175,21 @@ class OneDriveProvider extends CloudStorageProvider {
       'prompt': 'select_account',
       'response_mode': 'query',
     });
+    final callbackScheme = redirectUri.split('://')[0];
+    FlutterWebAuth2Options options;
+    if (callbackScheme == 'https' || callbackScheme == 'http') {
+      final redirectUriParsed = Uri.parse(redirectUri);
+      options = FlutterWebAuth2Options(
+        httpsHost: redirectUriParsed.host,
+        httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
+      );
+    } else {
+      options = const FlutterWebAuth2Options();
+    }
     final result = await FlutterWebAuth2.authenticate(
       url: authUrl.toString(),
-      callbackUrlScheme: redirectUri.split('://')[0],
+      callbackUrlScheme: callbackScheme,
+      options: options,
     );
     final code = Uri.parse(result).queryParameters['code'];
     if (code == null) {
