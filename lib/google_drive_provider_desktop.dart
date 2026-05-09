@@ -45,30 +45,25 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   static Future<GoogleDriveProvider?> connect({
     bool forceInteractive = false,
     List<String>? scopes,
-    // NEW: Client ID and Secret are required for the desktop flow.
     String? serverClientId,
-    String? clientSecret, // Secret is needed for the web app flow on desktop
-    int redirectPort = 8000, // Default port used by the package
+    String? clientSecret,
+    int redirectPort = 8000,
+    String? storageKeyPrefix,
   }) async {
     debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
     if (scopes != null) {
       GoogleDriveProvider.scopes = scopes;
     }
     try {
-      // 1. CONFIGURE: The new package uses a parameters object for configuration.
       final signInParams = all_platforms.GoogleSignInParams(
         clientId: serverClientId,
-        clientSecret: clientSecret, // May be null for other client types
+        clientSecret: clientSecret,
         scopes: GoogleDriveProvider.scopes,
         redirectPort: redirectPort,
       );
 
-      // 2. INITIALIZE: Create the GoogleSignIn instance with the params.
       final googleSignIn = all_platforms.GoogleSignIn(params: signInParams);
 
-      // 3. SIGN IN: The sign-in flow is simplified.
-      // signIn() attempts offline (silent) first, then falls back to online.
-      // signInOnline() forces the interactive flow.
       all_platforms.GoogleSignInCredentials? credentials;
       if (forceInteractive) {
         credentials = await googleSignIn.signInOnline();
@@ -81,17 +76,35 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
         return null;
       }
 
-      // 4. GET CLIENT: The authenticatedClient getter is now used.
-      // The separate requestScopes() call is no longer needed as scopes are
-      // handled during the signIn process.
-      final http.Client? client = await googleSignIn.authenticatedClient;
+      // 提取 tokens 后通过 connectWithToken 创建独立实例，支持多账户
+      final accessToken = credentials.accessToken;
+      final refreshToken = credentials.refreshToken;
+      final expiresIn = credentials.expiresIn;
+      final effectiveStorageKeyPrefix = storageKeyPrefix;
 
+      if (refreshToken != null && accessToken.isNotEmpty) {
+        int? expiresInSeconds;
+        if (expiresIn != null) {
+          expiresInSeconds = expiresIn.difference(DateTime.now()).inSeconds;
+          if (expiresInSeconds < 0) expiresInSeconds = null;
+        }
+        return connectWithToken(
+          accessToken: accessToken,
+          refreshToken: refreshToken,
+          clientId: serverClientId,
+          clientSecret: clientSecret,
+          storageKeyPrefix: effectiveStorageKeyPrefix,
+          expiresIn: expiresInSeconds,
+        );
+      }
+
+      // fallback: 无 refreshToken 时使用 SDK 客户端
+      final http.Client? client = await googleSignIn.authenticatedClient;
       if (client == null) {
         debugPrint('Failed to get authenticated Google client.');
         return null;
       }
 
-      // Wrap the client in a RetryClient to handle transient network errors (5xx).
       final retryClient = RetryClient(
         client,
         retries: 3,
@@ -100,13 +113,13 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
             'Retrying request to ${request.url} (Retry #$retryCount)'),
       );
 
-      // Create a new instance with the authenticated client.
       final provider = GoogleDriveProviderDesktop.internal();
       provider._googleSignIn = googleSignIn;
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
-      provider._accessToken = credentials.accessToken;
-      debugPrint('Google Drive user signed in successfully.');
+      provider._accessToken = accessToken;
+      provider._storageKeyPrefix = effectiveStorageKeyPrefix;
+      debugPrint('Google Drive user signed in successfully (SDK fallback).');
       return provider;
     } on SocketException catch (e) {
       debugPrint(
@@ -544,10 +557,12 @@ Future<GoogleDriveProvider?> connectToGoogleDrive(
         List<String>? scopes,
         String? serverClientId,
         String? clientSecret,
-        int redirectPort = 8000}) =>
+        int redirectPort = 8000,
+        String? storageKeyPrefix}) =>
     GoogleDriveProviderDesktop.connect(
         forceInteractive: forceInteractive,
         scopes: scopes,
         serverClientId: serverClientId,
         clientSecret: clientSecret,
-        redirectPort: redirectPort);
+        redirectPort: redirectPort,
+        storageKeyPrefix: storageKeyPrefix);
