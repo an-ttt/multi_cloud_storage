@@ -167,18 +167,25 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   Future<void> _performOAuthLogin(String scopes) async {
+    final isWindows = Platform.isWindows;
+    final effectiveRedirectUri = isWindows ? 'http://localhost:8080/' : redirectUri;
+    
     final authUrl = Uri.https('login.microsoftonline.com', 'common/oauth2/v2.0/authorize', {
       'client_id': clientId,
-      'redirect_uri': redirectUri,
+      'redirect_uri': effectiveRedirectUri,
       'response_type': 'code',
       'scope': scopes,
       'prompt': 'select_account',
       'response_mode': 'query',
     });
-    final callbackScheme = redirectUri.split('://')[0];
+    final callbackScheme = effectiveRedirectUri.split('://')[0];
     FlutterWebAuth2Options options;
-    if (callbackScheme == 'https' || callbackScheme == 'http') {
-      final redirectUriParsed = Uri.parse(redirectUri);
+    if (isWindows) {
+      options = const FlutterWebAuth2Options(
+        useWebview: false,
+      );
+    } else if (callbackScheme == 'https' || callbackScheme == 'http') {
+      final redirectUriParsed = Uri.parse(effectiveRedirectUri);
       options = FlutterWebAuth2Options(
         httpsHost: redirectUriParsed.host,
         httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
@@ -195,16 +202,16 @@ class OneDriveProvider extends CloudStorageProvider {
     if (code == null) {
       throw Exception('Authorization code not found');
     }
-    await _exchangeCodeForToken(code, scopes);
+    await _exchangeCodeForToken(code, scopes, effectiveRedirectUri);
   }
 
-  Future<void> _exchangeCodeForToken(String code, String scopes) async {
+  Future<void> _exchangeCodeForToken(String code, String scopes, [String? effectiveRedirectUri]) async {
     final response = await http.post(
       Uri.parse('https://login.microsoftonline.com/common/oauth2/v2.0/token'),
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
       body: {
         'client_id': clientId,
-        'redirect_uri': redirectUri,
+        'redirect_uri': effectiveRedirectUri ?? redirectUri,
         'grant_type': 'authorization_code',
         'code': code,
         'scope': scopes,

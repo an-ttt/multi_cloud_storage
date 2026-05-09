@@ -99,33 +99,6 @@ class MultiCloudStorage {
           expiresIn: expiresIn,
           storageKeyPrefix: storageKeyPrefix);
 
-  static Future<CloudStorageProvider?> connectToGoogleDriveWithToken({
-    required String accessToken,
-    String? refreshToken,
-    String? clientId,
-    String? clientSecret,
-    int? expiresIn,
-    String? storageKeyPrefix,
-  }) {
-    if (Platform.isWindows || Platform.isLinux) {
-      return GoogleDriveProviderDesktop.connectWithToken(
-          accessToken: accessToken,
-          refreshToken: refreshToken,
-          clientId: clientId,
-          clientSecret: clientSecret,
-          expiresIn: expiresIn,
-          storageKeyPrefix: storageKeyPrefix);
-    } else {
-      return GoogleDriveProvider.connectWithToken(
-          accessToken: accessToken,
-          refreshToken: refreshToken,
-          clientId: clientId,
-          clientSecret: clientSecret,
-          expiresIn: expiresIn,
-          storageKeyPrefix: storageKeyPrefix);
-    }
-  }
-
   static Future<CloudStorageProvider?> loadFromStorage({
     required CloudStorageType type,
     required String storageKeyPrefix,
@@ -152,20 +125,8 @@ class MultiCloudStorage {
           storageKeyPrefix: storageKeyPrefix,
         );
       case CloudStorageType.googleDrive:
-        if (clientId == null) return null;
-        if (Platform.isWindows || Platform.isLinux) {
-          return GoogleDriveProviderDesktop.loadFromStorage(
-            clientId: clientId,
-            clientSecret: clientSecret,
-            storageKeyPrefix: storageKeyPrefix,
-          );
-        } else {
-          return GoogleDriveProvider.loadFromStorage(
-            clientId: clientId,
-            clientSecret: clientSecret,
-            storageKeyPrefix: storageKeyPrefix,
-          );
-        }
+        // Google Drive 依赖 SDK 静默登录，不使用 loadFromStorage
+        return null;
       case CloudStorageType.icloud:
         return null;
     }
