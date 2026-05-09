@@ -31,24 +31,21 @@ class MultiCloudStorage {
           List<String>? scopes,
           String? serverClientId,
             String? clientSecret,
-            int redirectPort = 8000,
-            String? storageKeyPrefix}) {
+            int redirectPort = 8000}) {
       if (Platform.isWindows || Platform.isLinux) {
         return GoogleDriveProviderDesktop.connect(
               forceInteractive: forceInteractive,
               scopes: scopes,
               serverClientId: serverClientId,
               clientSecret: clientSecret,
-              redirectPort: redirectPort,
-              storageKeyPrefix: storageKeyPrefix);
+              redirectPort: redirectPort);
       } else {
         return GoogleDriveProvider.connect(
             forceInteractive: forceInteractive,
             scopes: scopes,
             serverClientId: serverClientId,
             clientSecret: clientSecret,
-            redirectPort: redirectPort,
-            storageKeyPrefix: storageKeyPrefix);
+            redirectPort: redirectPort);
       }
   }
 

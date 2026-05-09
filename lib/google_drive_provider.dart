@@ -60,9 +60,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
     bool forceInteractive = false,
     List<String>? scopes,
     String? serverClientId,
-    String? clientSecret,
-     int redirectPort = 8000,
-    String? storageKeyPrefix,
+    String? clientSecret, // Secret is needed for the web app flow on desktop
+     int redirectPort = 8000, // Default port used by the package
   }) async {
     debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
     if (scopes != null) {
@@ -95,39 +94,6 @@ class GoogleDriveProvider extends CloudStorageProvider {
       }
       final authorization = await account.authorizationClient
           .authorizeScopes(GoogleDriveProvider.scopes);
-
-      // 尝试获取 serverAuthCode 以交换 refresh_token，支持多账户
-      String? serverAuthCode;
-      try {
-        final serverAuth = await account.authorizationClient
-            .authorizeServer(GoogleDriveProvider.scopes);
-        serverAuthCode = serverAuth?.serverAuthCode;
-      } catch (e) {
-        debugPrint('Google Drive: authorizeServer failed, falling back to SDK client: $e');
-      }
-
-      if (serverAuthCode != null && serverClientId != null) {
-        // 用 serverAuthCode 交换 access_token + refresh_token
-        final tokens = await _exchangeServerAuthCode(
-          serverAuthCode: serverAuthCode,
-          clientId: serverClientId,
-          clientSecret: clientSecret,
-        );
-        if (tokens != null) {
-          return connectWithToken(
-            accessToken: tokens['access_token']!,
-            refreshToken: tokens['refresh_token'],
-            clientId: serverClientId,
-            clientSecret: clientSecret,
-            storageKeyPrefix: storageKeyPrefix,
-            expiresIn: tokens['expires_in'] != null
-                ? int.tryParse(tokens['expires_in']!)
-                : null,
-          );
-        }
-      }
-
-      // fallback: 无 serverAuthCode 或交换失败时使用 SDK 客户端
       final client =
           authorization.authClient(scopes: GoogleDriveProvider.scopes);
       final retryClient = RetryClient(
@@ -143,19 +109,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
       provider._authClient = client;
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
-      provider._storageKeyPrefix = storageKeyPrefix;
-      // 持久化 accessToken 以便 loadFromStorage 恢复
-      if (storageKeyPrefix != null) {
-        await _secureStorage.write(key: '${storageKeyPrefix}access_token', value: authorization.accessToken);
-        if (serverClientId != null) {
-          await _secureStorage.write(key: '${storageKeyPrefix}client_id', value: serverClientId);
-        }
-        if (clientSecret != null) {
-          await _secureStorage.write(key: '${storageKeyPrefix}client_secret', value: clientSecret);
-        }
-      }
       debugPrint(
-          'Google Drive user signed in: ID=${account.id}, Email=${account.email} (SDK fallback)');
+          'Google Drive user signed in: ID=${account.id}, Email=${account.email}');
       return provider;
     } on SocketException catch (e) {
       debugPrint('No internet connection during Google Drive sign-in.');
@@ -173,52 +128,6 @@ class GoogleDriveProvider extends CloudStorageProvider {
       } catch (_) {}
       return null;
     }
-  }
-
-  // 用 serverAuthCode 交换 tokens
-  static Future<Map<String, String>?> _exchangeServerAuthCode({
-    required String serverAuthCode,
-    required String clientId,
-    String? clientSecret,
-  }) async {
-    try {
-      final body = {
-        'code': serverAuthCode,
-        'client_id': clientId,
-        'grant_type': 'authorization_code',
-        'redirect_uri': 'urn:ietf:wg:oauth:2.0:oob',
-      };
-      if (clientSecret != null && clientSecret.isNotEmpty) {
-        body['client_secret'] = clientSecret;
-      }
-      final response = await http.post(
-        Uri.parse('https://oauth2.googleapis.com/token'),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: body,
-      );
-      if (response.statusCode == 200) {
-        final json = jsonDecode(response.body) as Map<String, dynamic>;
-        final result = <String, String>{};
-        if (json['access_token'] != null) {
-          result['access_token'] = json['access_token'] as String;
-        }
-        if (json['refresh_token'] != null) {
-          result['refresh_token'] = json['refresh_token'] as String;
-        }
-        if (json['expires_in'] != null) {
-          result['expires_in'] = json['expires_in'].toString();
-        }
-        if (result.containsKey('access_token')) {
-          debugPrint('Google Drive: serverAuthCode exchange successful, has refresh_token: ${result.containsKey('refresh_token')}');
-          return result;
-        }
-      } else {
-        debugPrint('Google Drive: serverAuthCode exchange failed: ${response.statusCode} ${response.body}');
-      }
-    } catch (e) {
-      debugPrint('Google Drive: serverAuthCode exchange error: $e');
-    }
-    return null;
   }
 
   static Future<GoogleDriveProvider?> connectWithToken({
@@ -1058,12 +967,10 @@ Future<GoogleDriveProvider?> connectToGoogleDrive(
       List<String>? scopes,
       String? serverClientId,
       String? clientSecret,
-      int redirectPort = 8000,
-      String? storageKeyPrefix}) =>
+      int redirectPort = 8000}) =>
     GoogleDriveProvider.connect(
         forceInteractive: forceInteractive,
         scopes: scopes,
         serverClientId: serverClientId,
         clientSecret: clientSecret,
-        redirectPort: redirectPort,
-        storageKeyPrefix: storageKeyPrefix);
+        redirectPort: redirectPort);
