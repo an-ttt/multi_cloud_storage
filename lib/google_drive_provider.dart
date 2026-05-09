@@ -279,19 +279,12 @@ class GoogleDriveProvider extends CloudStorageProvider {
       if (file == null || file.id == null) {
         throw Exception('GoogleDriveProvider: File not found at $path');
       }
+      // driveApi 不支持 Range 头，需手动构造 HTTP 请求
       final uri = Uri.parse(
           'https://www.googleapis.com/drive/v3/files/${file.id}?alt=media');
       final request = http.Request('GET', uri);
       request.headers['Range'] = 'bytes=$offset-${offset + length - 1}';
-      final http.StreamedResponse response;
-      if (_authClient != null) {
-        response = await _authClient!.send(request);
-      } else {
-        final token = await getAccessToken();
-        if (token == null) throw Exception('Not authenticated');
-        request.headers['Authorization'] = 'Bearer $token';
-        response = await http.Client().send(request);
-      }
+      final response = await _authClient!.send(request);
       final bytes = await response.stream.fold<BytesBuilder>(
           BytesBuilder(), (b, d) => b..add(d));
       return bytes.toBytes();
