@@ -9,7 +9,6 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:googleapis_auth/googleapis_auth.dart'
     show AccessDeniedException, AuthClient;
-import 'package:http/http.dart' as http;
 import 'package:http/retry.dart';
 import 'package:multi_cloud_storage/exceptions/no_connection_exception.dart';
 import 'package:path/path.dart';
@@ -279,14 +278,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
       if (file == null || file.id == null) {
         throw Exception('GoogleDriveProvider: File not found at $path');
       }
-      // driveApi 不支持 Range 头，需手动构造 HTTP 请求
-      final uri = Uri.parse(
-          'https://www.googleapis.com/drive/v3/files/${file.id}?alt=media');
-      final request = http.Request('GET', uri);
-      request.headers['Range'] = 'bytes=$offset-${offset + length - 1}';
-      final response = await _authClient!.send(request);
-      final bytes = await response.stream.fold<BytesBuilder>(
-          BytesBuilder(), (b, d) => b..add(d));
+      final end = offset + length - 1;
+      final media = await driveApi.files.get(
+        file.id!,
+        downloadOptions: drive.PartialDownloadOptions(drive.ByteRange(offset, end)),
+      ) as drive.Media;
+      final bytes = await media.stream.fold<BytesBuilder>(
+        BytesBuilder(), (b, d) => b..add(d),
+      );
       return bytes.toBytes();
     });
   }
