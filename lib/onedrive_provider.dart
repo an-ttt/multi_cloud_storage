@@ -514,9 +514,13 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<String?> getAccessToken() async {
     if (_accessToken == null ||
-        _tokenExpiry != null && _tokenExpiry!.isBefore(DateTime.now())) {
+        (_tokenExpiry != null && _tokenExpiry!.isBefore(DateTime.now()))) {
       if (_refreshToken != null) {
-        await _refreshAccessToken();
+        try {
+          await _refreshAccessToken();
+        } catch (e) {
+          debugPrint('OneDrive getAccessToken: token refresh failed: $e');
+        }
       }
     }
     return _accessToken;

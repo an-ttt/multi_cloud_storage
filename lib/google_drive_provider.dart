@@ -24,11 +24,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   late drive.DriveApi driveApi;
   bool isAuthenticated = false;
 
-  // Singleton instance backing fields.
-  static GoogleSignInAccount? currentAccount;
-  static GoogleSignInClientAuthorization? currentAuthorization;
-  static AuthClient? _authClient;
-  static GoogleDriveProvider? _instance;
+  GoogleSignInAccount? _currentAccount;
+  GoogleSignInClientAuthorization? _currentAuthorization;
+  AuthClient? _authClient;
   static bool _initialized = false;
   static List<String> scopes = [
     MultiCloudStorage.cloudAccess == CloudAccessType.appStorage
@@ -45,8 +43,6 @@ class GoogleDriveProvider extends CloudStorageProvider {
   );
 
   GoogleDriveProvider.internal();
-
-  static GoogleDriveProvider? get instance => _instance;
 
   /// Connects to Google Drive, authenticating the user.
   ///
@@ -68,10 +64,6 @@ class GoogleDriveProvider extends CloudStorageProvider {
      int redirectPort = 8000, // Default port used by the package
   }) async {
     debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
-    // Return existing instance if already connected and not forcing a new interactive session.
-    if (_instance != null && _instance!.isAuthenticated && !forceInteractive) {
-      return _instance;
-    }
     if (scopes != null) {
       GoogleDriveProvider.scopes = scopes;
     }
@@ -100,13 +92,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
           rethrow;
         }
       }
-      currentAccount = account;
       final authorization = await account.authorizationClient
           .authorizeScopes(GoogleDriveProvider.scopes);
-      currentAuthorization = authorization;
       final client =
           authorization.authClient(scopes: GoogleDriveProvider.scopes);
-      _authClient = client;
       final retryClient = RetryClient(
         client,
         retries: 3,
@@ -114,13 +103,15 @@ class GoogleDriveProvider extends CloudStorageProvider {
         onRetry: (request, response, retryCount) => debugPrint(
             'Retrying request to ${request.url} (Retry #$retryCount)'),
       );
-      final provider = _instance ?? GoogleDriveProvider.internal();
+      final provider = GoogleDriveProvider.internal();
+      provider._currentAccount = account;
+      provider._currentAuthorization = authorization;
+      provider._authClient = client;
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
-      _instance = provider;
       debugPrint(
           'Google Drive user signed in: ID=${account.id}, Email=${account.email}');
-      return _instance;
+      return provider;
     } on SocketException catch (e) {
       debugPrint('No internet connection during Google Drive sign-in.');
       throw NoConnectionException(e.message);
@@ -131,7 +122,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
       if (error is PlatformException && error.code == 'network_error') {
         throw NoConnectionException(error.toString());
       }
-      await signOut(); // Clean up on error.
+      try {
+        await GoogleSignIn.instance.disconnect();
+        await GoogleSignIn.instance.signOut();
+      } catch (_) {}
       return null;
     }
   }
@@ -146,15 +140,21 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }) async {
     debugPrint('connectWithToken Google Drive');
     try {
-      final provider = _instance ?? GoogleDriveProvider.internal();
+      final provider = GoogleDriveProvider.internal();
       final httpClient = _ManualTokenHttpClient(
         accessToken: accessToken,
         refreshToken: refreshToken,
         clientId: clientId,
         clientSecret: clientSecret,
-        onTokenRefreshed: (newToken) {
+        onTokenRefreshed: (newToken, newExpiresIn) {
           if (provider._storageKeyPrefix != null) {
             _secureStorage.write(key: '${provider._storageKeyPrefix}access_token', value: newToken);
+          }
+          if (newExpiresIn != null) {
+            provider._manualTokenExpiry = DateTime.now().add(Duration(seconds: newExpiresIn));
+            if (provider._storageKeyPrefix != null) {
+              _secureStorage.write(key: '${provider._storageKeyPrefix}token_expiry', value: provider._manualTokenExpiry!.toIso8601String());
+            }
           }
         },
       );
@@ -173,7 +173,6 @@ class GoogleDriveProvider extends CloudStorageProvider {
       provider._manualTokenExpiry = expiresIn != null && expiresIn > 0
           ? DateTime.now().add(Duration(seconds: expiresIn))
           : null;
-      _instance = provider;
       // Persist tokens to secure storage
       if (storageKeyPrefix != null) {
         await _secureStorage.write(key: '${storageKeyPrefix}access_token', value: accessToken);
@@ -216,7 +215,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
         expiresIn = expiry.difference(DateTime.now()).inSeconds;
         if (expiresIn < 0) expiresIn = null;
       }
-      return connectWithToken(
+      final provider = await connectWithToken(
         accessToken: storedAccessToken,
         refreshToken: storedRefreshToken,
         clientId: storedClientId,
@@ -224,6 +223,18 @@ class GoogleDriveProvider extends CloudStorageProvider {
         storageKeyPrefix: storageKeyPrefix,
         expiresIn: expiresIn,
       );
+      // Proactively refresh if token is expired or close to expiry
+      if (provider != null && provider._manualTokenHttpClient != null && provider._manualRefreshToken != null) {
+        if (provider._manualTokenExpiry == null ||
+            DateTime.now().isAfter(provider._manualTokenExpiry!.subtract(const Duration(minutes: 5)))) {
+          debugPrint('Google Drive loadFromStorage: token expired or near expiry, attempting refresh.');
+          final refreshed = await provider._manualTokenHttpClient!.refresh();
+          if (!refreshed) {
+            debugPrint('Google Drive loadFromStorage: token refresh failed.');
+          }
+        }
+      }
+      return provider;
     } catch (e) {
       debugPrint('Google Drive loadFromStorage failed: $e');
       return null;
@@ -406,7 +417,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<String?> loggedInUserDisplayName() async {
-    return currentAccount?.displayName;
+    return _currentAccount?.displayName;
   }
 
   @override
@@ -451,10 +462,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> loggedInUserEmail() async => currentAccount?.email;
+  Future<String?> loggedInUserEmail() async => _currentAccount?.email;
 
   @override
-  Future<String?> loggedInUserId() async => currentAccount?.id;
+  Future<String?> loggedInUserId() async => _currentAccount?.id;
 
   /// Checks if the current user's authentication token is expired.
   @override
@@ -569,8 +580,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
     });
   }
 
-  /// Signs the user out of Google and disconnects the app.
-  static Future<void> signOut() async {
+  Future<void> signOut() async {
     try {
       await GoogleSignIn.instance.disconnect();
       await GoogleSignIn.instance.signOut();
@@ -579,12 +589,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
     } finally {
       _authClient?.close();
       _authClient = null;
-      currentAccount = null;
-      currentAuthorization = null;
-      if (_instance != null) {
-        _instance!.isAuthenticated = false;
-        _instance = null;
-      }
+      _currentAccount = null;
+      _currentAuthorization = null;
+      isAuthenticated = false;
       debugPrint('User signed out from Google Drive.');
     }
   }
@@ -619,7 +626,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   void _checkAuth() {
-    if (!isAuthenticated || _instance == null) {
+    if (!isAuthenticated) {
       throw Exception(
           'GoogleDriveProvider: Not authenticated. Call connect() first.');
     }
@@ -633,15 +640,38 @@ class GoogleDriveProvider extends CloudStorageProvider {
     }
     debugPrint('Authentication error occurred. Attempting to reconnect...');
     isAuthenticated = false;
-    final reconnectedProvider = await GoogleDriveProvider.connect();
-    if (reconnectedProvider != null && reconnectedProvider.isAuthenticated) {
-      debugPrint('Successfully reconnected. Retrying the original request.');
-      return await _executeRequest<T>(request, authRetryCount: authRetryCount + 1);
-    } else {
-      debugPrint(
-          'Failed to reconnect after auth error. Throwing original error.');
-      throw error;
+    try {
+      if (_manualTokenHttpClient != null) {
+        final refreshed = await _manualTokenHttpClient!.refresh();
+        if (refreshed) {
+          isAuthenticated = true;
+          debugPrint('Successfully refreshed manual token. Retrying the original request.');
+          return await _executeRequest<T>(request, authRetryCount: authRetryCount + 1);
+        }
+      }
+      if (_currentAccount != null) {
+        final newAuthorization = await _currentAccount!.authorizationClient
+            .authorizeScopes(GoogleDriveProvider.scopes);
+        _currentAuthorization = newAuthorization;
+        final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
+        _authClient?.close();
+        _authClient = client;
+        final retryClient = RetryClient(
+          client,
+          retries: 3,
+          when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+          onRetry: (request, response, retryCount) => debugPrint(
+              'Retrying request to ${request.url} (Retry #$retryCount)'),
+        );
+        driveApi = drive.DriveApi(retryClient);
+        isAuthenticated = true;
+        debugPrint('Successfully reconnected. Retrying the original request.');
+        return await _executeRequest<T>(request, authRetryCount: authRetryCount + 1);
+      }
+    } catch (e) {
+      debugPrint('Failed to reconnect after auth error: $e');
     }
+    throw error;
   }
 
   /// Gets the root folder ID ('appDataFolder' or 'root') based on the access type.
@@ -767,8 +797,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<String?> getAccessToken() async {
-    if (currentAuthorization != null) {
-      return currentAuthorization!.accessToken;
+    if (_currentAuthorization != null) {
+      return _currentAuthorization!.accessToken;
     }
     if (_manualTokenHttpClient != null) {
       if (_manualTokenExpiry != null &&
@@ -782,13 +812,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<String?> getRefreshToken() async {
-    if (currentAuthorization != null) return null;
+    if (_currentAuthorization != null) return null;
     return _manualRefreshToken;
   }
 
   @override
   Future<DateTime?> getTokenExpiry() async {
-    if (currentAuthorization != null) return null;
+    if (_currentAuthorization != null) return null;
     return _manualTokenExpiry;
   }
 
@@ -797,8 +827,27 @@ class GoogleDriveProvider extends CloudStorageProvider {
     if (_manualTokenHttpClient != null) {
       return _manualTokenHttpClient!.refresh();
     }
-    if (currentAuthorization != null) {
-      return true;
+    if (_currentAccount != null && _currentAuthorization != null) {
+      try {
+        final newAuthorization = await _currentAccount!.authorizationClient
+            .authorizeScopes(GoogleDriveProvider.scopes);
+        _currentAuthorization = newAuthorization;
+        final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
+        _authClient?.close();
+        _authClient = client;
+        final retryClient = RetryClient(
+          client,
+          retries: 3,
+          when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+          onRetry: (request, response, retryCount) => debugPrint(
+              'Retrying request to ${request.url} (Retry #$retryCount)'),
+        );
+        driveApi = drive.DriveApi(retryClient);
+        return true;
+      } catch (e) {
+        debugPrint('Google Drive SDK token refresh failed: $e');
+        return false;
+      }
     }
     return false;
   }
@@ -817,16 +866,26 @@ class _ManualTokenHttpClient extends http.BaseClient {
   final String? refreshToken;
   final String? clientId;
   final String? clientSecret;
-  final void Function(String newAccessToken)? onTokenRefreshed;
+  final void Function(String newAccessToken, int? expiresIn)? onTokenRefreshed;
   final http.Client _inner = http.Client();
   bool _isRefreshing = false;
+  Completer<bool>? _refreshCompleter;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) async {
     request.headers['Authorization'] = 'Bearer $accessToken';
     final response = await _inner.send(request);
 
-    if (response.statusCode == 401 && refreshToken != null && clientId != null && !_isRefreshing) {
+    if (response.statusCode == 401 && refreshToken != null && clientId != null) {
+      if (_isRefreshing && _refreshCompleter != null) {
+        final refreshed = await _refreshCompleter!.future;
+        if (refreshed) {
+          final retryRequest = _copyRequest(request);
+          retryRequest.headers['Authorization'] = 'Bearer $accessToken';
+          return _inner.send(retryRequest);
+        }
+        return response;
+      }
       final refreshed = await _refreshAccessToken();
       if (refreshed) {
         final retryRequest = _copyRequest(request);
@@ -841,6 +900,7 @@ class _ManualTokenHttpClient extends http.BaseClient {
   Future<bool> _refreshAccessToken() async {
     if (refreshToken == null || clientId == null) return false;
     _isRefreshing = true;
+    _refreshCompleter = Completer<bool>();
     try {
       final body = {
         'grant_type': 'refresh_token',
@@ -858,18 +918,23 @@ class _ManualTokenHttpClient extends http.BaseClient {
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body);
         accessToken = json['access_token'] as String;
+        final expiresIn = json['expires_in'] as int?;
         debugPrint('Google Drive manual token client: access token refreshed successfully.');
-        onTokenRefreshed?.call(accessToken);
+        onTokenRefreshed?.call(accessToken, expiresIn);
+        _refreshCompleter!.complete(true);
         return true;
       } else {
         debugPrint('Google Drive manual token client: token refresh failed: ${response.statusCode}');
+        _refreshCompleter!.complete(false);
         return false;
       }
     } catch (e) {
       debugPrint('Google Drive manual token client: token refresh error: $e');
+      _refreshCompleter!.complete(false);
       return false;
     } finally {
       _isRefreshing = false;
+      _refreshCompleter = null;
     }
   }
 

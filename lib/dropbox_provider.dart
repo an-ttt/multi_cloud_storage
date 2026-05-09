@@ -534,14 +534,6 @@ class DropboxProvider extends CloudStorageProvider {
       if (e.response?.statusCode == 409) {
         throw NotFoundException(e.message ?? e.toString());
       }
-      if (e.response?.statusCode == 401) {
-        debugPrint(
-            'Dropbox request failed with 401. Possible token invalidation.');
-        // The interceptor handles automatic refresh. If it still fails,
-        // it indicates a more serious issue (e.g., revoked access).
-        await logout(); // Force logout to clear bad state
-      }
-      // Re-read and expose the API error message if available
       if (e.response?.data is Map) {
         final errorSummary = e.response?.data?['error_summary'];
         if (errorSummary != null) {
@@ -562,15 +554,19 @@ class DropboxProvider extends CloudStorageProvider {
         receiveTimeout: const Duration(seconds: 30)));
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
-        // Add the Authorization header to every request.
         if (_token != null) {
           options.headers['Authorization'] = 'Bearer ${_token!.accessToken}';
         }
         return handler.next(options);
       },
       onError: (e, handler) async {
-        // If a 401 Unauthorized error occurs, attempt to refresh the token.
         if (e.response?.statusCode == 401 && _token?.refreshToken != null) {
+          final retryCount = e.requestOptions.extra['dropbox_refresh_retry'] as int? ?? 0;
+          if (retryCount >= 1) {
+            debugPrint('Dropbox: 401 after refresh attempt, giving up.');
+            await logout();
+            return handler.reject(e);
+          }
           debugPrint(
               'Token expired (401). Attempting to refresh Dropbox token.');
           try {
@@ -578,19 +574,21 @@ class DropboxProvider extends CloudStorageProvider {
             await _saveToken(_token);
             debugPrint(
                 'Dropbox token refreshed successfully. Retrying original request.');
-            // Retry the original request with the new token.
+            final newHeaders = Map<String, dynamic>.from(e.requestOptions.headers);
+            newHeaders['Authorization'] = 'Bearer ${_token!.accessToken}';
             final response = await _dio.request(
               e.requestOptions.path,
               options: Options(
                   method: e.requestOptions.method,
-                  headers: e.requestOptions.headers),
+                  headers: newHeaders,
+                  extra: {'dropbox_refresh_retry': retryCount + 1}),
               data: e.requestOptions.data,
               queryParameters: e.requestOptions.queryParameters,
             );
             return handler.resolve(response);
           } catch (refreshError) {
             debugPrint('Failed to refresh Dropbox token. Logging out.');
-            await logout(); // Logout on catastrophic refresh failure.
+            await logout();
             return handler.reject(e);
           }
         }
