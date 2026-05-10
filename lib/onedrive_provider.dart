@@ -191,8 +191,13 @@ class OneDriveProvider extends CloudStorageProvider {
     final callbackScheme = effectiveRedirectUri.split('://')[0];
     FlutterWebAuth2Options options;
     if (isWindows) {
-      options = const FlutterWebAuth2Options(
-        useWebview: false,
+      // 🎯 Windows: 使用 webview 方式（useWebview: true），配合 httpsHost 过滤回调 URL
+      // 之前使用 useWebview: false（server 方式），但 callbackUrlScheme 传入 'http'
+      // 不满足 FlutterWebAuth2ServerPlugin 要求的 'http://localhost:{port}' 格式，
+      // 导致 ArgumentError 或回退到 webview 后访问 nativeclient 端点触发 AADSTS900561
+      options = FlutterWebAuth2Options(
+        useWebview: true,
+        httpsHost: 'localhost',
       );
     } else if (callbackScheme == 'https' || callbackScheme == 'http') {
       final redirectUriParsed = Uri.parse(effectiveRedirectUri);

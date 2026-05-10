@@ -31,7 +31,7 @@ class MultiCloudStorage {
           List<String>? scopes,
           String? serverClientId,
             String? clientSecret,
-            int redirectPort = 8000}) {
+            int redirectPort = 0}) {
       if (Platform.isWindows || Platform.isLinux) {
         return GoogleDriveProviderDesktop.connect(
               forceInteractive: forceInteractive,

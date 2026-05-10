@@ -26,11 +26,22 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     List<String>? scopes,
     String? serverClientId,
     String? clientSecret,
-    int redirectPort = 8000,
+    int redirectPort = 0,
   }) async {
     debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
     if (scopes != null) {
       GoogleDriveProvider.scopes = scopes;
+    }
+    // 🎯 动态分配端口，避免硬编码 8000 端口冲突
+    if (redirectPort == 0) {
+      try {
+        final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+        redirectPort = socket.port;
+        await socket.close();
+      } catch (e) {
+        debugPrint('Failed to allocate dynamic port for Google Drive OAuth: $e');
+        redirectPort = 8000;
+      }
     }
     try {
       final signInParams = all_platforms.GoogleSignInParams(
@@ -50,14 +61,14 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       }
 
       if (credentials == null) {
-        debugPrint('User cancelled Google Sign-In process.');
+        debugPrint('Google Sign-In returned null — user may have cancelled or token exchange failed (redirectPort: $redirectPort).');
         return null;
       }
 
       final http.Client? client = await googleSignIn.authenticatedClient;
 
       if (client == null) {
-        debugPrint('Failed to get authenticated Google client.');
+        debugPrint('Failed to get authenticated Google client — token may be invalid or expired.');
         return null;
       }
 
@@ -251,7 +262,7 @@ Future<GoogleDriveProvider?> connectToGoogleDrive(
         List<String>? scopes,
         String? serverClientId,
         String? clientSecret,
-        int redirectPort = 8000}) =>
+        int redirectPort = 0}) =>
     GoogleDriveProviderDesktop.connect(
         forceInteractive: forceInteractive,
         scopes: scopes,
