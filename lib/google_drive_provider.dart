@@ -119,7 +119,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
         await GoogleSignIn.instance.disconnect();
         await GoogleSignIn.instance.signOut();
       } catch (_) {}
-      return null;
+      rethrow;
     }
   }
 

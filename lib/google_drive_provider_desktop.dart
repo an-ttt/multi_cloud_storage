@@ -69,7 +69,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
 
       if (client == null) {
         debugPrint('Failed to get authenticated Google client — token may be invalid or expired.');
-        return null;
+        throw Exception('Google Drive authentication failed: unable to obtain authenticated client. The access token may be invalid or expired.');
       }
 
       final retryClient = RetryClient(
