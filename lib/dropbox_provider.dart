@@ -611,7 +611,11 @@ class DropboxProvider extends CloudStorageProvider {
       throw Exception('No Dropbox refresh token available.');
     }
     debugPrint('Executing Dropbox token refresh request.');
-    final dioForToken = Dio();
+    final dioForToken = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      sendTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 30),
+    ));
     final body = {
       'grant_type': 'refresh_token',
       'refresh_token': _token!.refreshToken,
@@ -654,9 +658,18 @@ class DropboxProvider extends CloudStorageProvider {
     final callbackScheme = _redirectUri.split('://')[0];
     debugPrint('Launching Dropbox authorization URL: $authUrl');
     try {
+      // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截自定义 scheme 回调，
+      // 导致 FlutterWebAuth2.authenticate() 的 Future 永远不会 resolve。
+      // 超时后由 _cleanUpDanglingCalls 机制清理挂起的回调。
       final result = await FlutterWebAuth2.authenticate(
         url: authUrl,
         callbackUrlScheme: callbackScheme,
+      ).timeout(
+        const Duration(minutes: 2),
+        onTimeout: () {
+          debugPrint('Dropbox interactive auth timed out after 2 minutes.');
+          throw TimeoutException('OAuth authentication timed out');
+        },
       );
       final code = Uri.parse(result).queryParameters['code'];
       if (code != null) {
@@ -679,7 +692,12 @@ class DropboxProvider extends CloudStorageProvider {
       throw Exception('PKCE code verifier is missing.');
     }
     debugPrint('Exchanging authorization code for a token.');
-    final dioForToken = Dio();
+    // 添加超时配置，防止 token 交换请求无限挂起
+    final dioForToken = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      sendTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 30),
+    ));
     final response = await dioForToken.post(
       'https://api.dropboxapi.com/oauth2/token',
       data: {
