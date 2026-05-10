@@ -69,8 +69,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
           account = await GoogleSignIn.instance
               .authenticate(scopeHint: GoogleDriveProvider.scopes);
         } on GoogleSignInException catch (e) {
+          debugPrint('Google Sign-In error: $e');
           if (e.code == GoogleSignInExceptionCode.canceled) {
-            debugPrint('User cancelled Google Sign-In process.');
             return null;
           }
           rethrow;
@@ -81,8 +81,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
         authorization = await account.authorizationClient
             .authorizeScopes(GoogleDriveProvider.scopes);
       } on GoogleSignInException catch (e) {
+        debugPrint('Google Drive scope authorization error: $e');
         if (e.code == GoogleSignInExceptionCode.canceled) {
-          debugPrint('User cancelled Google Drive scope authorization.');
           return null;
         }
         rethrow;
