@@ -168,7 +168,14 @@ class OneDriveProvider extends CloudStorageProvider {
 
   Future<void> _performOAuthLogin(String scopes) async {
     final isWindows = Platform.isWindows;
-    final effectiveRedirectUri = isWindows ? 'http://localhost:8080/' : redirectUri;
+    final isAndroid = Platform.isAndroid;
+    // Android: 使用自定义 scheme 回调，避免 Edge/Chrome Custom Tabs 在 WebAuthn/Passkey
+    // 认证完成后重定向发生在新浏览器上下文时，AuthTabIntent 的 HTTPS 回调匹配无法捕获
+    final effectiveRedirectUri = isWindows
+        ? 'http://localhost:8080/'
+        : isAndroid
+            ? 'musicgather://onedrive'
+            : redirectUri;
     
     final authUrl = Uri.https('login.microsoftonline.com', 'common/oauth2/v2.0/authorize', {
       'client_id': clientId,

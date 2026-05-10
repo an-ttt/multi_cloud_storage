@@ -53,9 +53,9 @@ class DropboxProvider extends CloudStorageProvider {
     String? storageKeyPrefix,
   }) async {
     debugPrint('connect Dropbox, forceInteractive: $forceInteractive');
-    if (appKey.isEmpty || appSecret.isEmpty || redirectUri.isEmpty) {
+    if (appKey.isEmpty || redirectUri.isEmpty) {
       debugPrint(
-          'Dropbox connection failed: App Key, Secret, or Redirect URI is missing.');
+          'Dropbox connection failed: App Key or Redirect URI is missing.');
       return null;
     }
     try {
@@ -686,7 +686,7 @@ class DropboxProvider extends CloudStorageProvider {
         'grant_type': 'authorization_code',
         'code': code,
         'client_id': _appKey,
-        'client_secret': _appSecret,
+        if (_appSecret.isNotEmpty) 'client_secret': _appSecret,
         'redirect_uri': _redirectUri,
         'code_verifier': _pkceCodeVerifier,
       },
