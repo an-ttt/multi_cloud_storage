@@ -76,8 +76,17 @@ class GoogleDriveProvider extends CloudStorageProvider {
           rethrow;
         }
       }
-      final authorization = await account.authorizationClient
-          .authorizeScopes(GoogleDriveProvider.scopes);
+      GoogleSignInClientAuthorization authorization;
+      try {
+        authorization = await account.authorizationClient
+            .authorizeScopes(GoogleDriveProvider.scopes);
+      } on GoogleSignInException catch (e) {
+        if (e.code == GoogleSignInExceptionCode.canceled) {
+          debugPrint('User cancelled Google Drive scope authorization.');
+          return null;
+        }
+        rethrow;
+      }
       final client =
           authorization.authClient(scopes: GoogleDriveProvider.scopes);
       final retryClient = RetryClient(

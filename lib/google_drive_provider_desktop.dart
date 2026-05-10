@@ -98,7 +98,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       if (error is PlatformException && error.code == 'network_error') {
         throw NoConnectionException(error.toString());
       }
-      return null;
+      rethrow;
     }
   }
 
