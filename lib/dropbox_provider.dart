@@ -658,12 +658,25 @@ class DropboxProvider extends CloudStorageProvider {
     final callbackScheme = _redirectUri.split('://')[0];
     debugPrint('Launching Dropbox authorization URL: $authUrl');
     try {
+      // 🎯 传入 FlutterWebAuth2Options 解决 Android AuthTabIntent 兼容性问题：
+      // 1. preferEphemeral: true → 触发 shouldUseAuthTabs() 的浏览器版本检查，
+      //    在不支持 AuthTabIntent 的浏览器上自动回退到 CustomTabsIntent
+      // 2. customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
+      //    （与 OneDrive provider 保持一致的做法）
+      // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
+      final options = FlutterWebAuth2Options(
+        preferEphemeral: true,
+        customTabsPackageOrder: Platform.isAndroid
+            ? ['com.android.chrome']
+            : null,
+      );
       // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截自定义 scheme 回调，
       // 导致 FlutterWebAuth2.authenticate() 的 Future 永远不会 resolve。
       // 超时后由 _cleanUpDanglingCalls 机制清理挂起的回调。
       final result = await FlutterWebAuth2.authenticate(
         url: authUrl,
         callbackUrlScheme: callbackScheme,
+        options: options,
       ).timeout(
         const Duration(minutes: 2),
         onTimeout: () {
@@ -774,7 +787,7 @@ class DropboxProvider extends CloudStorageProvider {
       isDirectory: isDir,
       metadata: {'id': data['id'], if (!isDir) 'rev': data['rev']},
       id: data['id'],
-      mimeType: isDir ? null : null,
+      mimeType: null,
     );
   }
 

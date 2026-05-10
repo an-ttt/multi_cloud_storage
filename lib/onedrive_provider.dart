@@ -169,16 +169,10 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<void> _performOAuthLogin(String scopes) async {
     final isWindows = Platform.isWindows;
     final isAndroid = Platform.isAndroid;
-    // 🎯 动态获取可用端口，避免硬编码端口冲突
-    String effectiveRedirectUri;
-    if (isWindows) {
-      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-      final port = socket.port;
-      await socket.close();
-      effectiveRedirectUri = 'http://localhost:$port/';
-    } else {
-      effectiveRedirectUri = redirectUri;
-    }
+    // Windows: 使用 useWebview: true 时，webview 会拦截回调 URL，
+    // 不需要本地服务器，因此直接使用 Azure AD 中注册的 redirectUri（如 nativeclient），
+    // 避免动态 localhost 端口未在 Azure AD 注册导致 redirect_uri_mismatch 错误
+    final effectiveRedirectUri = redirectUri;
     
     final authUrl = Uri.https('login.microsoftonline.com', 'common/oauth2/v2.0/authorize', {
       'client_id': clientId,
@@ -191,14 +185,20 @@ class OneDriveProvider extends CloudStorageProvider {
     final callbackScheme = effectiveRedirectUri.split('://')[0];
     FlutterWebAuth2Options options;
     if (isWindows) {
-      // 🎯 Windows: 使用 webview 方式（useWebview: true），配合 httpsHost 过滤回调 URL
-      // 之前使用 useWebview: false（server 方式），但 callbackUrlScheme 传入 'http'
-      // 不满足 FlutterWebAuth2ServerPlugin 要求的 'http://localhost:{port}' 格式，
-      // 导致 ArgumentError 或回退到 webview 后访问 nativeclient 端点触发 AADSTS900561
-      options = FlutterWebAuth2Options(
-        useWebview: true,
-        httpsHost: 'localhost',
-      );
+      // Windows: 使用 webview 方式（useWebview: true），配合 httpsHost/httpsPath 过滤回调 URL
+      // webview 会拦截导航到 redirectUri 的请求，从中提取授权码
+      final redirectUriParsed = Uri.parse(effectiveRedirectUri);
+      if (redirectUriParsed.scheme == 'https' || redirectUriParsed.scheme == 'http') {
+        options = FlutterWebAuth2Options(
+          useWebview: true,
+          httpsHost: redirectUriParsed.host,
+          httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
+        );
+      } else {
+        options = FlutterWebAuth2Options(
+          useWebview: true,
+        );
+      }
     } else if (callbackScheme == 'https' || callbackScheme == 'http') {
       final redirectUriParsed = Uri.parse(effectiveRedirectUri);
       options = FlutterWebAuth2Options(
@@ -646,13 +646,24 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<String> downloadFileByShareToken({
     required String shareToken,
     required String localPath,
-  }) async {
-    final downloadUrl = Uri.parse(shareToken).replace(queryParameters: {'download': '1'});
-    await _dio.download(
-      downloadUrl.toString(),
-      localPath,
+  }) {
+    return _executeRequest(
+      () async {
+        // 通过 Graph API shares 端点解析共享链接，获取 driveId 和 itemId
+        // 使用已认证的 Dio 客户端下载，确保需要认证的共享链接也能正常工作
+        final resolvedInfo = await _resolveShareUrlForUpload(shareToken);
+        if (resolvedInfo == null) {
+          throw Exception('Could not resolve the provided sharing URL for download.');
+        }
+        final downloadUrl = 'https://graph.microsoft.com/v1.0/drives/${resolvedInfo.driveId}/items/${resolvedInfo.itemId}/content';
+        await _dio.download(
+          downloadUrl,
+          localPath,
+        );
+        return localPath;
+      },
+      operation: 'downloadFileByShareToken',
     );
-    return localPath;
   }
 
   @override

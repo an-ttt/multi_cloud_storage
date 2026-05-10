@@ -24,6 +24,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
   GoogleSignInClientAuthorization? _currentAuthorization;
   AuthClient? _authClient;
   static bool _initialized = false;
+  static String? _initializedServerClientId;
   static List<String> scopes = [
     MultiCloudStorage.cloudAccess == CloudAccessType.appStorage
         ? drive.DriveApi.driveAppdataScope
@@ -47,6 +48,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
       if (!_initialized) {
         await GoogleSignIn.instance.initialize(serverClientId: serverClientId);
         _initialized = true;
+        _initializedServerClientId = serverClientId;
+      } else if (serverClientId != null && serverClientId != _initializedServerClientId) {
+        debugPrint(
+          'GoogleDriveProvider: GoogleSignIn already initialized with '
+          'serverClientId=$_initializedServerClientId. Ignoring new '
+          'serverClientId=$serverClientId. initialize() can only be called once.',
+        );
       }
       GoogleSignInAccount? account;
       if (!forceInteractive) {

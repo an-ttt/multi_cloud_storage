@@ -24,7 +24,6 @@ dependencies:
   icloud_storage_sync: ^0.0.4
   googleapis_auth: ^2.0.0
   google_sign_in_all_platforms: ^2.0.0
-  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_test:
