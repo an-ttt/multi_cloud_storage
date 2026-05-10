@@ -169,13 +169,16 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<void> _performOAuthLogin(String scopes) async {
     final isWindows = Platform.isWindows;
     final isAndroid = Platform.isAndroid;
-    // Android: 使用自定义 scheme 回调，避免 Edge/Chrome Custom Tabs 在 WebAuthn/Passkey
-    // 认证完成后重定向发生在新浏览器上下文时，AuthTabIntent 的 HTTPS 回调匹配无法捕获
-    final effectiveRedirectUri = isWindows
-        ? 'http://localhost:8080/'
-        : isAndroid
-            ? 'musicgather://onedrive'
-            : redirectUri;
+    // 🎯 动态获取可用端口，避免硬编码端口冲突
+    String effectiveRedirectUri;
+    if (isWindows) {
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = socket.port;
+      await socket.close();
+      effectiveRedirectUri = 'http://localhost:$port/';
+    } else {
+      effectiveRedirectUri = redirectUri;
+    }
     
     final authUrl = Uri.https('login.microsoftonline.com', 'common/oauth2/v2.0/authorize', {
       'client_id': clientId,
@@ -196,9 +199,14 @@ class OneDriveProvider extends CloudStorageProvider {
       options = FlutterWebAuth2Options(
         httpsHost: redirectUriParsed.host,
         httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
+        // Android: 优先使用 Chrome，Edge 的 AuthTabIntent 实现可能导致
+        // WebAuthn/Passkey 认证（人脸、指纹、PIN 或安全密钥）卡住
+        customTabsPackageOrder: isAndroid ? ['com.android.chrome'] : null,
       );
     } else {
-      options = const FlutterWebAuth2Options();
+      options = FlutterWebAuth2Options(
+        customTabsPackageOrder: isAndroid ? ['com.android.chrome'] : null,
+      );
     }
     final result = await FlutterWebAuth2.authenticate(
       url: authUrl.toString(),
