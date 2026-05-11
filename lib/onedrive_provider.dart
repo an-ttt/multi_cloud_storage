@@ -119,6 +119,11 @@ class OneDriveProvider extends CloudStorageProvider {
       provider._accessToken = storedAccessToken;
       provider._refreshToken = storedRefreshToken;
       provider._tokenExpiry = storedExpiry != null ? DateTime.tryParse(storedExpiry) : null;
+      // expiry 解析失败时，视为 token 已过期，确保后续逻辑能尝试刷新
+      if (provider._tokenExpiry == null && storedExpiry != null) {
+        debugPrint('OneDrive loadFromStorage: token expiry parse failed, treating as expired.');
+        provider._tokenExpiry = DateTime.fromMillisecondsSinceEpoch(0);
+      }
       if (provider._tokenExpiry != null && provider._tokenExpiry!.isBefore(DateTime.now())) {
         if (provider._refreshToken != null) {
           try {
@@ -127,6 +132,9 @@ class OneDriveProvider extends CloudStorageProvider {
             debugPrint('OneDrive loadFromStorage: token refresh failed: $e');
             return null;
           }
+        } else {
+          debugPrint('OneDrive loadFromStorage: token expired and no refresh token available.');
+          return null;
         }
       }
       provider._isAuthenticated = true;
