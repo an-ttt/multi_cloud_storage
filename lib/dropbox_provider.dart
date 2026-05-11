@@ -73,8 +73,15 @@ class DropboxProvider extends CloudStorageProvider {
         provider._token = storedToken;
         if (provider._token!.isExpired) {
           debugPrint('Stored Dropbox token is expired, attempting refresh.');
-          await provider._refreshToken();
-          await provider._saveToken(provider._token);
+          // M-06 fix: 刷新失败时清除 token 并返回 null，避免状态不一致
+          try {
+            await provider._refreshToken();
+            await provider._saveToken(provider._token);
+          } catch (e) {
+            debugPrint('Dropbox connect: stored token refresh failed: $e');
+            provider._token = null;
+            return null;
+          }
         }
         await provider._fetchCurrentUserAccount();
         provider._isAuthenticated = true;
@@ -159,7 +166,12 @@ class DropboxProvider extends CloudStorageProvider {
       final token = await provider._getToken();
       if (token == null) return null;
       provider._token = token;
-      if (token.isExpired && token.refreshToken != null) {
+      // S-01 fix: token 过期且无 refreshToken 时应返回 null，而非返回不可用的 provider
+      if (token.isExpired) {
+        if (token.refreshToken == null) {
+          debugPrint('Dropbox loadFromStorage: token expired and no refresh token available.');
+          return null;
+        }
         try {
           await provider._refreshToken();
           await provider._saveToken(provider._token);
@@ -394,9 +406,15 @@ class DropboxProvider extends CloudStorageProvider {
   @override
   Future<String?> getAccessToken() async {
     if (_token == null) return null;
+    // M-04 fix: 捕获刷新失败异常，返回 null 而非传播异常
     if (_token!.isExpired && _token!.refreshToken != null) {
-      await _refreshToken();
-      await _saveToken(_token);
+      try {
+        await _refreshToken();
+        await _saveToken(_token);
+      } catch (e) {
+        debugPrint('Dropbox getAccessToken: token refresh failed: $e');
+        return null;
+      }
     }
     return _token!.accessToken;
   }
@@ -531,8 +549,13 @@ class DropboxProvider extends CloudStorageProvider {
       if (e.error is SocketException) {
         throw NoConnectionException(e.message ?? e.toString());
       }
+      // M-05 fix: 仅将 path_lookup/not_found 类型的 409 当作 NotFoundException，
+      // 其他 409 错误（如 path/conflict、too_many_write_operations）应正常抛出
       if (e.response?.statusCode == 409) {
-        throw NotFoundException(e.message ?? e.toString());
+        final errorSummary = e.response?.data?['error_summary'] as String?;
+        if (errorSummary != null && errorSummary.contains('path_lookup/not_found')) {
+          throw NotFoundException(e.message ?? e.toString());
+        }
       }
       if (e.response?.data is Map) {
         final errorSummary = e.response?.data?['error_summary'];

@@ -11,7 +11,7 @@ import 'package:googleapis_auth/googleapis_auth.dart'
     show AccessDeniedException, AuthClient;
 import 'package:http/retry.dart';
 import 'package:multi_cloud_storage/exceptions/no_connection_exception.dart';
-import 'package:path/path.dart';
+import 'package:path/path.dart' as p;
 import 'cloud_storage_provider.dart';
 import 'exceptions/not_found_exception.dart';
 import 'multi_cloud_storage.dart';
@@ -26,10 +26,17 @@ class GoogleDriveProvider extends CloudStorageProvider {
   static bool _initialized = false;
   static String? _initializedServerClientId;
   static List<String> scopes = [
-    MultiCloudStorage.cloudAccess == CloudAccessType.appStorage
-        ? drive.DriveApi.driveAppdataScope
-        : drive.DriveApi.driveScope,
+    drive.DriveApi.driveAppdataScope,
   ];
+
+  // M-07 fix: 动态获取默认 scopes，基于当前 cloudAccess 值而非类加载时的静态绑定
+  static List<String> _defaultScopes() {
+    return [
+      MultiCloudStorage.cloudAccess == CloudAccessType.appStorage
+          ? drive.DriveApi.driveAppdataScope
+          : drive.DriveApi.driveScope,
+    ];
+  }
 
   GoogleDriveProvider.internal();
 
@@ -41,8 +48,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
     int redirectPort = 8000,
   }) async {
     debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
+    // M-07 fix: 未指定 scopes 时动态获取默认值
     if (scopes != null) {
       GoogleDriveProvider.scopes = scopes;
+    } else {
+      GoogleDriveProvider.scopes = _defaultScopes();
     }
     try {
       if (!_initialized) {
@@ -145,7 +155,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
         );
         if (fileList.files != null) {
           for (final file in fileList.files!) {
-            String currentItemPath = join(path, file.name ?? '');
+            // S-02 fix: 使用 p.url.join 确保始终使用正斜杠，避免 Windows 平台使用反斜杠
+            String currentItemPath = p.url.join(path, file.name ?? '');
             if (path == '/' || path.isEmpty) currentItemPath = file.name ?? '';
             cloudFiles.add(CloudFile(
               path: currentItemPath,
@@ -224,8 +235,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
         );
       } else {
         final file = File(localPath);
-        final fileName = basename(remotePath);
-        final remoteDir = dirname(remotePath) == '.' ? '' : dirname(remotePath);
+        final fileName = p.basename(remotePath);
+        final remoteDir = p.dirname(remotePath) == '.' ? '' : p.dirname(remotePath);
         final folder = await _getOrCreateFolder(remoteDir);
         final driveFile = drive.File()
           ..name = fileName
@@ -371,9 +382,18 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<String?> getShareTokenFromShareLink(Uri shareLink) async {
-    final regex = RegExp(r'd/([a-zA-Z0-9_-]+)');
-    final match = regex.firstMatch(shareLink.toString());
-    return match?.group(1);
+    final linkStr = shareLink.toString();
+    // M-10 fix: 支持多种 Google Drive URL 格式
+    // 格式1: /d/FILE_ID/...
+    var match = RegExp(r'/d/([a-zA-Z0-9_-]+)').firstMatch(linkStr);
+    if (match != null) return match.group(1);
+    // 格式2: open?id=FILE_ID
+    match = RegExp(r'[?&]id=([a-zA-Z0-9_-]+)').firstMatch(linkStr);
+    if (match != null) return match.group(1);
+    // 格式3: file/d/FILE_ID/...
+    match = RegExp(r'file/d/([a-zA-Z0-9_-]+)').firstMatch(linkStr);
+    if (match != null) return match.group(1);
+    return null;
   }
 
   @override
@@ -386,9 +406,15 @@ class GoogleDriveProvider extends CloudStorageProvider {
         final media = await driveApi.files.get(shareToken,
             downloadOptions: drive.DownloadOptions.fullMedia) as drive.Media;
         await media.stream.pipe(sink);
-      } finally {
+      } catch (e) {
+        // S-03 fix: 流异常时清理部分下载的文件，与 downloadFile 保持一致
         await sink.close();
+        if (await output.exists()) {
+          await output.delete();
+        }
+        rethrow;
       }
+      await sink.close();
       return localPath;
     });
   }
@@ -465,26 +491,31 @@ class GoogleDriveProvider extends CloudStorageProvider {
     }
     debugPrint('Authentication error occurred. Attempting to reconnect...');
     isAuthenticated = false;
+    // M-08 fix: _currentAccount 为 null 时清理资源并抛出错误
+    if (_currentAccount == null) {
+      _authClient?.close();
+      _authClient = null;
+      _currentAuthorization = null;
+      throw error;
+    }
     try {
-      if (_currentAccount != null) {
-        final newAuthorization = await _currentAccount!.authorizationClient
-            .authorizeScopes(GoogleDriveProvider.scopes);
-        _currentAuthorization = newAuthorization;
-        final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
-        _authClient?.close();
-        _authClient = client;
-        final retryClient = RetryClient(
-          client,
-          retries: 3,
-          when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
-          onRetry: (request, response, retryCount) => debugPrint(
-              'Retrying request to ${request.url} (Retry #$retryCount)'),
-        );
-        driveApi = drive.DriveApi(retryClient);
-        isAuthenticated = true;
-        debugPrint('Successfully reconnected. Retrying the original request.');
-        return await _executeRequest<T>(request, authRetryCount: authRetryCount + 1);
-      }
+      final newAuthorization = await _currentAccount!.authorizationClient
+          .authorizeScopes(GoogleDriveProvider.scopes);
+      _currentAuthorization = newAuthorization;
+      final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
+      _authClient?.close();
+      _authClient = client;
+      final retryClient = RetryClient(
+        client,
+        retries: 3,
+        when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+        onRetry: (request, response, retryCount) => debugPrint(
+            'Retrying request to ${request.url} (Retry #$retryCount)'),
+      );
+      driveApi = drive.DriveApi(retryClient);
+      isAuthenticated = true;
+      debugPrint('Successfully reconnected. Retrying the original request.');
+      return await _executeRequest<T>(request, authRetryCount: authRetryCount + 1);
     } catch (e) {
       debugPrint('Failed to reconnect after auth error: $e');
     }
@@ -501,7 +532,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
     if (folderPath.isEmpty || folderPath == '.' || folderPath == '/') {
       return _getRootFolder();
     }
-    final parts = split(folderPath
+    final parts = p.split(folderPath
         .replaceAll(RegExp(r'^/+'), '')
         .replaceAll(RegExp(r'/+$'), ''));
     if (parts.isEmpty || (parts.length == 1 && parts[0].isEmpty)) {
@@ -527,7 +558,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
     if (normalizedPath.isEmpty) {
       return _getRootFolder();
     }
-    final parts = split(normalizedPath);
+    final parts = p.split(normalizedPath);
     drive.File currentFolder = await _getRootFolder();
     for (var i = 0; i < parts.length - 1; i++) {
       final folderName = parts[i];
@@ -560,7 +591,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
         .replaceAll(RegExp(r'^/+'), '')
         .replaceAll(RegExp(r'/+$'), '');
     if (normalizedPath.isEmpty) return _getRootFolder();
-    final parts = split(normalizedPath);
+    final parts = p.split(normalizedPath);
     drive.File currentFolder = await _getRootFolder();
     for (final part in parts) {
       if (part.isEmpty) continue;
@@ -597,7 +628,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
         .create(folder, $fields: 'id, name, mimeType, parents');
   }
 
-  String _sanitizeQueryString(String value) => value.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+  // M-09 fix: 更全面的转义，覆盖 Google Drive API 查询语法中的特殊字符
+  String _sanitizeQueryString(String value) =>
+      value.replaceAll('\\', '\\\\')
+           .replaceAll("'", "\\'")
+           .replaceAll('"', '\\"')
+           .replaceAll('\n', '\\n')
+           .replaceAll('\r', '\\r');
 
   @override
   Future<String?> getAccessToken() async {

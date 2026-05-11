@@ -14,7 +14,8 @@ import 'exceptions/not_found_exception.dart';
 class ICloudProvider extends CloudStorageProvider {
   late final IcloudStorageSync _icloudSync;
   late final String _containerId;
-  static ICloudProvider? _instance;
+  // M-15 fix: 使用 Map 按 containerId 缓存实例，支持多容器
+  static final Map<String, ICloudProvider> _instances = {};
 
   ICloudProvider._create(this._containerId) {
     _icloudSync = IcloudStorageSync();
@@ -27,14 +28,16 @@ class ICloudProvider extends CloudStorageProvider {
   /// This method requires the iCloud [containerId] specific to your app.
   /// It will throw an [UnsupportedError] if called on a non-iOS platform.
   static Future<ICloudProvider?> connect({required String containerId}) async {
-    // iCloud is only available on iOS.
+    // iCloud is only available on iOS and macOS.
     if (Platform.isIOS == false && Platform.isMacOS == false) {
-      debugPrint('iCloud Storage is only available on iOS and.');
+      // M-16 fix: 修正不完整的错误消息
+      debugPrint('iCloud Storage is only available on iOS and macOS.');
       throw UnsupportedError(
-          'iCloud Storage is only available on iOS and MacOs.');
+          'iCloud Storage is only available on iOS and macOS.');
     }
-    _instance ??= ICloudProvider._create(containerId);
-    return _instance;
+    // M-15 fix: 按 containerId 缓存实例
+    _instances[containerId] ??= ICloudProvider._create(containerId);
+    return _instances[containerId]!;
   }
 
   /// Lists all files and directories at the specified [path].
@@ -52,8 +55,9 @@ class ICloudProvider extends CloudStorageProvider {
     for (final icloudFile in allFiles) {
       final itemPath = icloudFile.relativePath;
       if (recursive) {
-        // For recursive, check if the item path starts with the directory path.
-        if (itemPath.startsWith(normalizedPath)) {
+        // S-05 fix: 精确匹配路径前缀，避免 /foo 匹配 /foobar
+        if (normalizedPath.isEmpty || itemPath == normalizedPath ||
+            itemPath.startsWith('$normalizedPath/')) {
           results.add(_mapToCloudFile(icloudFile));
         }
       } else {
@@ -140,7 +144,13 @@ class ICloudProvider extends CloudStorageProvider {
     }
 
     try {
-      return await completer.future;
+      // M-17 fix: 为 completer 添加超时保护，防止 stream 挂起导致内存泄漏
+      return await completer.future.timeout(
+        const Duration(minutes: 5),
+        onTimeout: () {
+          throw TimeoutException('iCloud download timed out');
+        },
+      );
     } finally {
       // Ensure the subscription is cancelled to prevent memory leaks.
       await progressSubscription?.cancel();
@@ -175,10 +185,19 @@ class ICloudProvider extends CloudStorageProvider {
   /// Deletes the file or directory at the specified [path].
   @override
   Future<void> deleteFile(String path) async {
+    // M-18 fix: 先查询元数据判断是否为目录，而非依赖路径末尾的 /
+    bool isDirectory;
+    try {
+      final metadata = await getFileMetadata(path);
+      isDirectory = metadata.isDirectory;
+    } catch (_) {
+      // 如果元数据查询失败，回退到路径判断
+      isDirectory = path.endsWith('/');
+    }
     await _icloudSync.delete(
       containerId: _containerId,
-      relativePath: path,
-      isDirectory: path.endsWith('/'),
+      relativePath: _sanitizePath(path),
+      isDirectory: isDirectory,
     );
   }
 
@@ -217,10 +236,10 @@ class ICloudProvider extends CloudStorageProvider {
     return false;
   }
 
-  /// logout not necessary since only current appleId user can login, so just clear isntance
+  /// logout not necessary since only current appleId user can login, so just clear instance
   @override
   Future<bool> logout() async {
-    _instance = null;
+    _instances.remove(_containerId);
     return true;
   }
 

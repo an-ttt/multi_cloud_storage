@@ -8,8 +8,6 @@ import 'package:google_sign_in_all_platforms/google_sign_in_all_platforms.dart'
     as all_platforms;
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:googleapis_auth/googleapis_auth.dart' show AccessDeniedException;
-import 'package:http/http.dart' as http;
-import 'package:http/http.dart' as client;
 import 'package:http/retry.dart';
 import 'package:multi_cloud_storage/exceptions/no_connection_exception.dart';
 import 'google_drive_provider.dart';
@@ -65,7 +63,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
         return null;
       }
 
-      final http.Client? client = await googleSignIn.authenticatedClient;
+      final client = await googleSignIn.authenticatedClient;
 
       if (client == null) {
         debugPrint('Failed to get authenticated Google client — token may be invalid or expired.');
@@ -102,17 +100,17 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     }
   }
 
-  @override
-  Future<String?> loggedInUserDisplayName() async {
+  // S-04 fix: 使用认证客户端发起用户信息请求，确保 token 自动刷新和错误重试
+  Future<Map<String, dynamic>?> _fetchUserInfo() async {
     try {
-      final response = await client.get(
+      if (_googleSignIn == null) return null;
+      final authClient = await _googleSignIn!.authenticatedClient;
+      if (authClient == null) return null;
+      final response = await authClient.get(
         Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
-        headers: {'Authorization': 'Bearer $_accessToken'},
       );
-
       if (response.statusCode == 200) {
-        final userInfo = jsonDecode(response.body);
-        return userInfo['name'];
+        return jsonDecode(response.body) as Map<String, dynamic>;
       } else {
         debugPrint(
             'Failed to fetch user info. Status: ${response.statusCode}, Body: ${response.body}');
@@ -124,37 +122,21 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   }
 
   @override
+  Future<String?> loggedInUserDisplayName() async {
+    final userInfo = await _fetchUserInfo();
+    return userInfo?['name'] as String?;
+  }
+
+  @override
   Future<String?> loggedInUserEmail() async {
-    try {
-      final response = await client.get(
-        Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
-        headers: {'Authorization': 'Bearer $_accessToken'},
-      );
-      if (response.statusCode == 200) {
-        final userInfo = jsonDecode(response.body);
-        return userInfo['email'] as String?;
-      }
-    } catch (e) {
-      debugPrint('Error fetching user email: $e');
-    }
-    return null;
+    final userInfo = await _fetchUserInfo();
+    return userInfo?['email'] as String?;
   }
 
   @override
   Future<String?> loggedInUserId() async {
-    try {
-      final response = await client.get(
-        Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
-        headers: {'Authorization': 'Bearer $_accessToken'},
-      );
-      if (response.statusCode == 200) {
-        final userInfo = jsonDecode(response.body);
-        return userInfo['sub'] as String?;
-      }
-    } catch (e) {
-      debugPrint('Error fetching user id: $e');
-    }
-    return null;
+    final userInfo = await _fetchUserInfo();
+    return userInfo?['sub'] as String?;
   }
 
   @override
@@ -164,7 +146,9 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     } catch (error) {
       debugPrint('Failed to sign out or disconnect from Google. $error');
     } finally {
+      // M-12 fix: 清理内部状态和引用
       _googleSignIn = null;
+      _accessToken = null;
       isAuthenticated = false;
       debugPrint('User signed out from Google Drive.');
     }
@@ -198,15 +182,16 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
             debugPrint('Successfully reconnected. Retrying the original request.');
             try {
               return await request();
-            } on drive.DetailedApiRequestError catch (e) {
-              if (e.status == 401 || e.status == 403) {
-                debugPrint('Auth retry limit reached after reconnect. Throwing original error.');
-                throw error;
+            } on drive.DetailedApiRequestError catch (retryError) {
+              if (retryError.status == 401 || retryError.status == 403) {
+                // M-13 fix: 抛出重试时的具体错误，而非原始错误，保留更多调试信息
+                debugPrint('Auth retry limit reached after reconnect. Throwing retry error.');
+                rethrow;
               }
               rethrow;
             } on AccessDeniedException {
-              debugPrint('Auth retry limit reached after reconnect. Throwing original error.');
-              throw error;
+              debugPrint('Auth retry limit reached after reconnect. Throwing retry error.');
+              rethrow;
             }
           }
         }
@@ -231,7 +216,8 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   Future<bool> refreshAccessToken() async {
     if (_googleSignIn != null) {
       try {
-        final credentials = await _googleSignIn!.signIn();
+        // M-14 fix: 使用 silentSignIn 避免弹出 UI 窗口
+        final credentials = await _googleSignIn!.silentSignIn();
         if (credentials != null) {
           _accessToken = credentials.accessToken;
           final client = await _googleSignIn!.authenticatedClient;

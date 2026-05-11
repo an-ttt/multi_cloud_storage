@@ -6,11 +6,12 @@ import  'package:multi_cloud_storage/google_drive_provider_desktop.dart';
 import 'package:multi_cloud_storage/icloud_provider.dart';
 import 'package:multi_cloud_storage/onedrive_provider.dart';
 
-import 'dropbox_provider.dart';
+import 'package:multi_cloud_storage/dropbox_provider.dart';
 
 enum CloudStorageType { dropbox, oneDrive, googleDrive, icloud }
 
 class MultiCloudStorage {
+  // M-01 fix: cloudAccess 使用公开字段，Google Drive Provider 在 connect 时动态读取最新值
   static CloudAccessType cloudAccess = CloudAccessType.appStorage;
 
   static Future<CloudStorageProvider?> connectToDropbox(
@@ -125,10 +126,13 @@ class MultiCloudStorage {
           storageKeyPrefix: storageKeyPrefix,
         );
       case CloudStorageType.googleDrive:
-        // Google Drive 依赖 SDK 静默登录，不使用 loadFromStorage
-        return null;
+        // M-02 fix: Google Drive 依赖 SDK 静默登录，不支持 loadFromStorage，抛出 UnsupportedError
+        throw UnsupportedError(
+            'Google Drive does not support loadFromStorage. Use connectToGoogleDrive instead.');
       case CloudStorageType.icloud:
-        return null;
+        // M-02 fix: iCloud 使用系统级认证，不支持 loadFromStorage，抛出 UnsupportedError
+        throw UnsupportedError(
+            'iCloud does not support loadFromStorage. Use connectToIcloud instead.');
     }
   }
 }

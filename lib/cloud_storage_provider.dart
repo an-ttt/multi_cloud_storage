@@ -109,4 +109,20 @@ class CloudFile {
     this.id,
     this.mimeType,
   });
+
+  // M-03 fix: 重写 hashCode 和 == 以支持集合操作中的值比较
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CloudFile &&
+          runtimeType == other.runtimeType &&
+          path == other.path &&
+          id == other.id;
+
+  @override
+  int get hashCode => Object.hash(path, id);
+
+  @override
+  String toString() =>
+      'CloudFile(path: $path, name: $name, isDirectory: $isDirectory, size: $size, id: $id)';
 }

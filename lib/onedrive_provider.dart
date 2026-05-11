@@ -5,7 +5,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
-import 'package:http/http.dart' as http;
 import 'cloud_storage_provider.dart';
 import 'exceptions/no_connection_exception.dart';
 import 'multi_cloud_storage.dart';
@@ -225,46 +224,58 @@ class OneDriveProvider extends CloudStorageProvider {
     await _exchangeCodeForToken(code, scopes, effectiveRedirectUri);
   }
 
+  // M-21 fix: 使用 Dio 替代 http 包，统一超时配置
   Future<void> _exchangeCodeForToken(String code, String scopes, [String? effectiveRedirectUri]) async {
-    final response = await http.post(
-      Uri.parse('https://login.microsoftonline.com/common/oauth2/v2.0/token'),
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: {
+    final dioForToken = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      sendTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 30),
+    ));
+    final response = await dioForToken.post(
+      'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      data: {
         'client_id': clientId,
         'redirect_uri': effectiveRedirectUri ?? redirectUri,
         'grant_type': 'authorization_code',
         'code': code,
         'scope': scopes,
       },
+      options: Options(contentType: 'application/x-www-form-urlencoded'),
     );
     if (response.statusCode != 200) {
-      throw Exception('Token exchange failed: ${response.body}');
+      throw Exception('Token exchange failed: ${response.data}');
     }
-    final json = jsonDecode(response.body);
+    final json = response.data;
     _accessToken = json['access_token'] as String;
     _refreshToken = json['refresh_token'] as String?;
     _tokenExpiry = DateTime.now().add(Duration(seconds: json['expires_in'] as int));
     await _saveTokens();
   }
 
+  // M-21 fix: 使用 Dio 替代 http 包，统一超时配置
   Future<void> _refreshAccessToken() async {
     if (_refreshToken == null) {
       throw Exception('No refresh token available');
     }
-    final response = await http.post(
-      Uri.parse('https://login.microsoftonline.com/common/oauth2/v2.0/token'),
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: {
+    final dioForToken = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 10),
+      sendTimeout: const Duration(seconds: 30),
+      receiveTimeout: const Duration(seconds: 30),
+    ));
+    final response = await dioForToken.post(
+      'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+      data: {
         'client_id': clientId,
         'redirect_uri': redirectUri,
         'grant_type': 'refresh_token',
         'refresh_token': _refreshToken,
       },
+      options: Options(contentType: 'application/x-www-form-urlencoded'),
     );
     if (response.statusCode != 200) {
-      throw Exception('Token refresh failed: ${response.body}');
+      throw Exception('Token refresh failed: ${response.data}');
     }
-    final json = jsonDecode(response.body);
+    final json = response.data;
     _accessToken = json['access_token'] as String;
     _refreshToken = json['refresh_token'] as String? ?? _refreshToken;
     _tokenExpiry = DateTime.now().add(Duration(seconds: json['expires_in'] as int));
@@ -285,15 +296,25 @@ class OneDriveProvider extends CloudStorageProvider {
       },
       onError: (e, handler) async {
         if (e.response?.statusCode == 401 && _refreshToken != null) {
+          // S-06 fix: 添加重试计数限制，防止无限循环
+          final retryCount = e.requestOptions.extra['onedrive_refresh_retry'] as int? ?? 0;
+          if (retryCount >= 1) {
+            debugPrint('OneDrive: 401 after refresh attempt, giving up.');
+            _isAuthenticated = false;
+            return handler.reject(e);
+          }
           debugPrint('OneDrive token expired (401). Attempting to refresh token.');
           try {
             await _refreshAccessToken();
             debugPrint('OneDrive token refreshed successfully. Retrying original request.');
+            final newHeaders = Map<String, dynamic>.from(e.requestOptions.headers);
+            newHeaders['Authorization'] = 'Bearer $_accessToken';
             final response = await _dio.request(
               e.requestOptions.path,
               options: Options(
                 method: e.requestOptions.method,
-                headers: e.requestOptions.headers,
+                headers: newHeaders,
+                extra: {'onedrive_refresh_retry': retryCount + 1},
               ),
               data: e.requestOptions.data,
               queryParameters: e.requestOptions.queryParameters,
@@ -347,12 +368,17 @@ class OneDriveProvider extends CloudStorageProvider {
       () async {
         final effectivePath = path.isEmpty ? '/' : path;
         final encodedPath = _encodePath(effectivePath);
-        final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
-        final response = await _dio.get(
-          url,
-        );
-        final List<dynamic> items = response.data['value'];
-        final cloudFiles = items.map((item) => _mapToCloudFile(item)).toList();
+        // S-07 fix: 添加分页逻辑，跟随 @odata.nextLink 获取所有文件
+        final List<CloudFile> cloudFiles = [];
+        String? nextLink;
+        do {
+          final url = nextLink ??
+              'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
+          final response = await _dio.get(url);
+          final List<dynamic> items = response.data['value'];
+          cloudFiles.addAll(items.map((item) => _mapToCloudFile(item)));
+          nextLink = response.data['@odata.nextLink'] as String?;
+        } while (nextLink != null);
         if (recursive) {
           final List<CloudFile> subFolderFiles = [];
           for (final cf in cloudFiles) {
@@ -405,6 +431,9 @@ class OneDriveProvider extends CloudStorageProvider {
     );
   }
 
+  // M-19/M-20 fix: 大文件使用上传会话（resumable upload），小文件使用简单上传
+  static const _simpleUploadMaxBytes = 4 * 1024 * 1024; // 4MB
+
   @override
   Future<String> uploadFile({
     required String localPath,
@@ -414,18 +443,53 @@ class OneDriveProvider extends CloudStorageProvider {
     return _executeRequest(
       () async {
         final file = File(localPath);
-        final bytes = await file.readAsBytes();
+        final fileSize = await file.length();
         final encodedPath = _encodePath(remotePath);
-        final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
-        await _dio.put(
-          url,
-          data: bytes,
-          options: Options(
-            headers: {
-              'Content-Type': 'application/octet-stream',
-            },
-          ),
-        );
+        if (fileSize <= _simpleUploadMaxBytes) {
+          // 小文件：简单上传
+          final bytes = await file.readAsBytes();
+          final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+          await _dio.put(
+            url,
+            data: bytes,
+            options: Options(
+              headers: {
+                'Content-Type': 'application/octet-stream',
+              },
+            ),
+          );
+        } else {
+          // 大文件：创建上传会话，分块上传
+          final createSessionUrl = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createUploadSession';
+          final sessionResponse = await _dio.post(
+            createSessionUrl,
+            data: {'item': {'@microsoft.graph.conflictBehavior': 'replace'}},
+            options: Options(contentType: 'application/json'),
+          );
+          final uploadUrl = sessionResponse.data['uploadUrl'] as String;
+          int bytesUploaded = 0;
+          final stream = file.openRead();
+          await for (final chunk in stream) {
+            final chunkBytes = chunk is Uint8List ? chunk : Uint8List.fromList(chunk);
+            final start = bytesUploaded;
+            final end = bytesUploaded + chunkBytes.length - 1;
+            final chunkDio = Dio(BaseOptions(
+              sendTimeout: const Duration(minutes: 5),
+              receiveTimeout: const Duration(minutes: 5),
+            ));
+            await chunkDio.put(
+              uploadUrl,
+              data: Stream.fromIterable([chunkBytes]),
+              options: Options(
+                headers: {
+                  'Content-Length': chunkBytes.length,
+                  'Content-Range': 'bytes $start-$end/$fileSize',
+                },
+              ),
+            );
+            bytesUploaded += chunkBytes.length;
+          }
+        }
         return remotePath;
       },
       operation: 'uploadFile to $remotePath',
@@ -464,7 +528,8 @@ class OneDriveProvider extends CloudStorageProvider {
           data: {
             'name': dirName,
             'folder': {},
-            '@microsoft.graph.conflictBehavior': 'fail',
+            // M-23 fix: 使用 'rename' 而非 'fail'，与其他 Provider 保持幂等创建语义
+            '@microsoft.graph.conflictBehavior': 'rename',
           },
         );
       },
@@ -598,12 +663,26 @@ class OneDriveProvider extends CloudStorageProvider {
       return true;
     }
     try {
-      await _dio.get(
+      final response = await _dio.get(
         'https://graph.microsoft.com/v1.0/me/drive/root/children?\$select=id&\$top=1',
+        options: Options(validateStatus: (status) => status != null && status < 500),
       );
+      // M-24 fix: 仅 401/403 表示 token 过期，其他错误不应误判
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        return true;
+      }
+      return false;
+    } on DioException catch (e) {
+      // M-24 fix: 网络错误不应误判为 token 过期
+      if (e.error is SocketException) {
+        return false;
+      }
+      if (e.response?.statusCode == 401 || e.response?.statusCode == 403) {
+        return true;
+      }
       return false;
     } catch (e) {
-      return true;
+      return false;
     }
   }
 
@@ -753,7 +832,8 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   String _encodeShareUrlForGraphAPI(String url) {
-    final base64UrlString = base64Url.encode(utf8.encode(url));
+    // M-22 fix: 去除 base64url 填充字符 '='，Graph API 要求无填充的 base64url 编码
+    final base64UrlString = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     return 'u!$base64UrlString';
   }
 
