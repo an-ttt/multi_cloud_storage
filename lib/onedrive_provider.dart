@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -202,21 +203,36 @@ class OneDriveProvider extends CloudStorageProvider {
     } else if (callbackScheme == 'https' || callbackScheme == 'http') {
       final redirectUriParsed = Uri.parse(effectiveRedirectUri);
       options = FlutterWebAuth2Options(
+        // 🎯 传入 FlutterWebAuth2Options 解决 Android AuthTabIntent 兼容性问题：
+        // 1. preferEphemeral: false → 允许共享浏览器会话，使第三方登录
+        //    能识别已登录的账号，避免每次重新输入（true 会以隐身模式打开，隔离 Cookie）
+        // 2. customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
+        //    Chrome 对 AuthTabIntent 支持完善，无需 preferEphemeral 触发回退
+        // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
+        preferEphemeral: false,
         httpsHost: redirectUriParsed.host,
         httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
-        // Android: 优先使用 Chrome，Edge 的 AuthTabIntent 实现可能导致
-        // WebAuthn/Passkey 认证（人脸、指纹、PIN 或安全密钥）卡住
         customTabsPackageOrder: isAndroid ? ['com.android.chrome'] : null,
       );
     } else {
       options = FlutterWebAuth2Options(
+        preferEphemeral: false,
         customTabsPackageOrder: isAndroid ? ['com.android.chrome'] : null,
       );
     }
+    // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截回调，
+    // 导致 FlutterWebAuth2.authenticate() 的 Future 永远不会 resolve。
+    // 超时后抛出 TimeoutException，由调用方处理。
     final result = await FlutterWebAuth2.authenticate(
       url: authUrl.toString(),
       callbackUrlScheme: callbackScheme,
       options: options,
+    ).timeout(
+      const Duration(minutes: 2),
+      onTimeout: () {
+        debugPrint('OneDrive interactive auth timed out after 2 minutes.');
+        throw TimeoutException('OneDrive OAuth authentication timed out');
+      },
     );
     final code = Uri.parse(result).queryParameters['code'];
     if (code == null) {
