@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
@@ -433,6 +434,8 @@ class OneDriveProvider extends CloudStorageProvider {
 
   // M-19/M-20 fix: 大文件使用上传会话（resumable upload），小文件使用简单上传
   static const _simpleUploadMaxBytes = 4 * 1024 * 1024; // 4MB
+  // 每个 chunk 必须是 320 KiB 的倍数（Microsoft Graph API 要求）
+  static const _uploadChunkSize = 320 * 1024 * 10; // 3,276,800 bytes = 3.125 MiB
 
   @override
   Future<String> uploadFile({
@@ -460,6 +463,7 @@ class OneDriveProvider extends CloudStorageProvider {
           );
         } else {
           // 大文件：创建上传会话，分块上传
+          // 每个 chunk 大小必须是 320 KiB 的倍数（Microsoft Graph API 要求）
           final createSessionUrl = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createUploadSession';
           final sessionResponse = await _dio.post(
             createSessionUrl,
@@ -467,27 +471,61 @@ class OneDriveProvider extends CloudStorageProvider {
             options: Options(contentType: 'application/json'),
           );
           final uploadUrl = sessionResponse.data['uploadUrl'] as String;
+          final chunkDio = Dio(BaseOptions(
+            sendTimeout: const Duration(minutes: 5),
+            receiveTimeout: const Duration(minutes: 5),
+          ));
+
           int bytesUploaded = 0;
           final stream = file.openRead();
+          final buffer = BytesBuilder();
+
           await for (final chunk in stream) {
-            final chunkBytes = chunk is Uint8List ? chunk : Uint8List.fromList(chunk);
+            buffer.add(chunk);
+            while (buffer.length >= _uploadChunkSize) {
+              final bufferedBytes = buffer.takeBytes();
+              final uploadChunk = Uint8List.sublistView(
+                Uint8List.fromList(bufferedBytes), 0, _uploadChunkSize,
+              );
+              if (bufferedBytes.length > _uploadChunkSize) {
+                buffer.add(Uint8List.sublistView(
+                  Uint8List.fromList(bufferedBytes), _uploadChunkSize,
+                ));
+              }
+
+              final start = bytesUploaded;
+              final end = bytesUploaded + uploadChunk.length - 1;
+              await chunkDio.put(
+                uploadUrl,
+                data: Stream.fromIterable([uploadChunk]),
+                options: Options(
+                  headers: {
+                    'Content-Length': uploadChunk.length,
+                    'Content-Range': 'bytes $start-$end/$fileSize',
+                  },
+                ),
+              );
+              bytesUploaded += uploadChunk.length;
+            }
+          }
+
+          // 发送剩余数据（最后一块允许小于 320 KiB 的倍数）
+          if (buffer.length > 0) {
+            final remainingBytes = buffer.takeBytes();
+            final uploadChunk = Uint8List.fromList(remainingBytes);
             final start = bytesUploaded;
-            final end = bytesUploaded + chunkBytes.length - 1;
-            final chunkDio = Dio(BaseOptions(
-              sendTimeout: const Duration(minutes: 5),
-              receiveTimeout: const Duration(minutes: 5),
-            ));
+            final end = bytesUploaded + uploadChunk.length - 1;
             await chunkDio.put(
               uploadUrl,
-              data: Stream.fromIterable([chunkBytes]),
+              data: Stream.fromIterable([uploadChunk]),
               options: Options(
                 headers: {
-                  'Content-Length': chunkBytes.length,
+                  'Content-Length': uploadChunk.length,
                   'Content-Range': 'bytes $start-$end/$fileSize',
                 },
               ),
             );
-            bytesUploaded += chunkBytes.length;
+            bytesUploaded += uploadChunk.length;
           }
         }
         return remotePath;
@@ -654,6 +692,28 @@ class OneDriveProvider extends CloudStorageProvider {
       debugPrint('OneDrive refreshAccessToken failed: $e');
       return false;
     }
+  }
+
+  @override
+  Future<void> saveToStorage(String storageKeyPrefix) async {
+    final oldPrefix = _storageKeyPrefix;
+    _storageKeyPrefix = storageKeyPrefix;
+    await _saveTokens();
+    // Clear old keys if they differ from the new prefix
+    if (oldPrefix != null && oldPrefix != storageKeyPrefix) {
+      final oldAccessTokenKey = '${oldPrefix}access_token';
+      final oldRefreshTokenKey = '${oldPrefix}refresh_token';
+      final oldTokenExpiryKey = '${oldPrefix}token_expiry';
+      await _secureStorage.delete(key: oldAccessTokenKey);
+      await _secureStorage.delete(key: oldRefreshTokenKey);
+      await _secureStorage.delete(key: oldTokenExpiryKey);
+    } else if (oldPrefix == null) {
+      // Clear default keys used during initial OAuth
+      await _secureStorage.delete(key: 'onedrive_access_token');
+      await _secureStorage.delete(key: 'onedrive_refresh_token');
+      await _secureStorage.delete(key: 'onedrive_token_expiry');
+    }
+    debugPrint('OneDrive token saved to storage with prefix: $storageKeyPrefix');
   }
 
   @override

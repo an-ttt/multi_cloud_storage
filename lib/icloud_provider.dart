@@ -334,4 +334,8 @@ class ICloudProvider extends CloudStorageProvider {
 
   @override
   Future<bool> refreshAccessToken() async => true;
+
+  // iCloud uses OS-managed authentication, no storage migration needed
+  @override
+  Future<void> saveToStorage(String storageKeyPrefix) async {}
 }

@@ -72,6 +72,11 @@ abstract class CloudStorageProvider {
   /// Forces a token refresh. Returns true if successful.
   Future<bool> refreshAccessToken();
 
+  /// Saves the current token to secure storage with the specified key prefix.
+  /// Used to migrate tokens from default keys to account-specific keys
+  /// after the accountId is determined post-OAuth.
+  Future<void> saveToStorage(String storageKeyPrefix);
+
   Future<String?> loggedInUserEmail();
 
   Future<String?> loggedInUserId();

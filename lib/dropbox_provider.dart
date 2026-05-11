@@ -444,6 +444,22 @@ class DropboxProvider extends CloudStorageProvider {
     }
   }
 
+  @override
+  Future<void> saveToStorage(String storageKeyPrefix) async {
+    final oldPrefix = _storageKeyPrefix;
+    _storageKeyPrefix = storageKeyPrefix;
+    await _saveToken(_token);
+    // Clear old keys if they differ from the new prefix
+    if (oldPrefix != null && oldPrefix != storageKeyPrefix) {
+      final oldTokenKey = '${oldPrefix}token';
+      await _secureStorage.delete(key: oldTokenKey);
+    } else if (oldPrefix == null) {
+      // Clear default key used during initial OAuth
+      await _secureStorage.delete(key: _kDropboxTokenKey);
+    }
+    debugPrint('Dropbox token saved to storage with prefix: $storageKeyPrefix');
+  }
+
   /// Checks if the current user's authentication token is expired.
   @override
   Future<bool> tokenExpired() async => _token?.isExpired ?? true;

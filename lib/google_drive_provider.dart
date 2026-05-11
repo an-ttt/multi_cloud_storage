@@ -676,6 +676,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
     }
     return false;
   }
+
+  // Google Drive uses SDK-managed tokens, no storage migration needed
+  @override
+  Future<void> saveToStorage(String storageKeyPrefix) async {}
 }
 
 Future<GoogleDriveProvider?> connectToGoogleDrive(
