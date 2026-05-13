@@ -33,6 +33,18 @@ class DropboxProvider extends CloudStorageProvider {
 
   bool _isAuthenticated = false;
 
+  // 🎯 桌面端（Windows/Linux）使用 http://localhost 作为 redirect URI
+  // 原因：flutter_web_auth_2 在桌面端默认使用 WebView（useWebview: true），
+  // WebView 只能拦截 http/https 导航，自定义 scheme（如 musicgather://）无法被拦截。
+  // Dropbox 允许 localhost URI 无需预注册，且支持 HTTP scheme。
+  // 参考：RFC 8252 §8.3（Loopback Redirect），Dropbox OAuth 文档
+  String get _effectiveRedirectUri {
+    if (Platform.isWindows || Platform.isLinux) {
+      return 'http://localhost';
+    }
+    return _redirectUri;
+  }
+
   /// Private constructor used by the static `connect` method.
   DropboxProvider._create({
     required String appKey,
@@ -711,22 +723,37 @@ class DropboxProvider extends CloudStorageProvider {
   /// Manages the interactive OAuth2 flow using a web view and app links.
   Future<String?> _getAuthCodeViaInteractiveFlow() async {
     final authUrl = _getAuthorizationUrl();
-    final callbackScheme = _redirectUri.split('://')[0];
+    final effectiveRedirect = _effectiveRedirectUri;
+    final callbackScheme = effectiveRedirect.split('://')[0];
     debugPrint('Launching Dropbox authorization URL: $authUrl');
     try {
-      // 🎯 传入 FlutterWebAuth2Options 解决 Android AuthTabIntent 兼容性问题：
-      // 1. preferEphemeral: false → 允许共享浏览器会话，使 Google 等第三方登录
-      //    能识别已登录的账号，避免每次重新输入（true 会以隐身模式打开，隔离 Cookie）
-      // 2. customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
-      //    Chrome 对 AuthTabIntent 支持完善，无需 preferEphemeral 触发回退
-      //    （与 OneDrive provider 保持一致的做法）
-      // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
-      final options = FlutterWebAuth2Options(
-        preferEphemeral: false,
-        customTabsPackageOrder: Platform.isAndroid
-            ? ['com.android.chrome']
-            : null,
-      );
+      final isDesktop = Platform.isWindows || Platform.isLinux;
+      FlutterWebAuth2Options options;
+      if (isDesktop) {
+        // 🎯 桌面端（Windows/Linux）：使用 WebView + http://localhost 回调
+        // WebView 拦截导航到 localhost 的请求，提取授权码
+        // 参考：RFC 8252 §8.3（Loopback Redirect）
+        final redirectUriParsed = Uri.parse(effectiveRedirect);
+        options = FlutterWebAuth2Options(
+          useWebview: true,
+          httpsHost: redirectUriParsed.host,
+          httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
+        );
+      } else {
+        // 🎯 移动端：传入 FlutterWebAuth2Options 解决 Android AuthTabIntent 兼容性问题：
+        // 1. preferEphemeral: false → 允许共享浏览器会话，使 Google 等第三方登录
+        //    能识别已登录的账号，避免每次重新输入（true 会以隐身模式打开，隔离 Cookie）
+        // 2. customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
+        //    Chrome 对 AuthTabIntent 支持完善，无需 preferEphemeral 触发回退
+        //    （与 OneDrive provider 保持一致的做法）
+        // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
+        options = FlutterWebAuth2Options(
+          preferEphemeral: false,
+          customTabsPackageOrder: Platform.isAndroid
+              ? ['com.android.chrome']
+              : null,
+        );
+      }
       // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截自定义 scheme 回调，
       // 导致 FlutterWebAuth2.authenticate() 的 Future 永远不会 resolve。
       // 超时后由 _cleanUpDanglingCalls 机制清理挂起的回调。
@@ -784,7 +811,7 @@ class DropboxProvider extends CloudStorageProvider {
         'code': code,
         'client_id': _appKey,
         if (_appSecret.isNotEmpty) 'client_secret': _appSecret,
-        'redirect_uri': _redirectUri,
+        'redirect_uri': _effectiveRedirectUri,
         'code_verifier': _pkceCodeVerifier,
       },
       options: Options(contentType: 'application/x-www-form-urlencoded'),
@@ -868,7 +895,7 @@ class DropboxProvider extends CloudStorageProvider {
     final queryParams = {
       'client_id': _appKey,
       'response_type': 'code',
-      'redirect_uri': _redirectUri,
+      'redirect_uri': _effectiveRedirectUri,
       'token_access_type': 'offline', // To get a refresh token
       'code_challenge_method': 'S256',
       'code_challenge': _generateCodeChallengeS256(_pkceCodeVerifier!),
