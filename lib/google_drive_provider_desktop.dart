@@ -15,6 +15,12 @@ import 'google_drive_provider.dart';
 class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   all_platforms.GoogleSignIn? _googleSignIn;
 
+  // 🎯 复用 GoogleSignIn 实例，避免重复创建导致 "__params is already not null" 断言错误
+  // google_sign_in_all_platforms 内部使用单例 GoogleSignInAllPlatformsInterface.instance，
+  // 其 _setParams() 有 assert(_params == null) 断言，第二次创建 GoogleSignIn 时会触发此断言失败。
+  // 复用同一实例可避免重复调用 init()，从而绕过该限制。
+  static all_platforms.GoogleSignIn? _sharedGoogleSignIn;
+
   GoogleDriveProviderDesktop.internal() : super.internal();
 
   String? _accessToken;
@@ -30,26 +36,35 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     if (scopes != null) {
       GoogleDriveProvider.scopes = scopes;
     }
-    // 🎯 动态分配端口，避免硬编码 8000 端口冲突
-    if (redirectPort == 0) {
-      try {
-        final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-        redirectPort = socket.port;
-        await socket.close();
-      } catch (e) {
-        debugPrint('Failed to allocate dynamic port for Google Drive OAuth: $e');
-        redirectPort = 8000;
-      }
-    }
     try {
-      final signInParams = all_platforms.GoogleSignInParams(
-        clientId: serverClientId,
-        clientSecret: clientSecret,
-        scopes: GoogleDriveProvider.scopes,
-        redirectPort: redirectPort,
-      );
+      // 🎯 复用已有的 GoogleSignIn 实例，避免 "__params is already not null" 错误
+      all_platforms.GoogleSignIn googleSignIn;
+      if (_sharedGoogleSignIn != null) {
+        googleSignIn = _sharedGoogleSignIn!;
+        debugPrint('Reusing existing GoogleSignIn instance for Google Drive OAuth.');
+      } else {
+        // 🎯 动态分配端口，避免硬编码 8000 端口冲突
+        if (redirectPort == 0) {
+          try {
+            final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+            redirectPort = socket.port;
+            await socket.close();
+          } catch (e) {
+            debugPrint('Failed to allocate dynamic port for Google Drive OAuth: $e');
+            redirectPort = 8000;
+          }
+        }
 
-      final googleSignIn = all_platforms.GoogleSignIn(params: signInParams);
+        final signInParams = all_platforms.GoogleSignInParams(
+          clientId: serverClientId,
+          clientSecret: clientSecret,
+          scopes: GoogleDriveProvider.scopes,
+          redirectPort: redirectPort,
+        );
+
+        googleSignIn = all_platforms.GoogleSignIn(params: signInParams);
+        _sharedGoogleSignIn = googleSignIn;
+      }
 
       all_platforms.GoogleSignInCredentials? credentials;
       if (forceInteractive) {

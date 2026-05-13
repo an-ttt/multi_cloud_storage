@@ -21,7 +21,7 @@ class DropboxProvider extends CloudStorageProvider {
   final String _redirectUri;
 
   // --- Token storage ---
-  final _secureStorage = const FlutterSecureStorage();
+  late final FlutterSecureStorage _secureStorage;
   static const _kDropboxTokenKey = 'dropbox_token';
   String? _storageKeyPrefix;
 
@@ -29,6 +29,7 @@ class DropboxProvider extends CloudStorageProvider {
   DropboxToken? _token;
   DropboxAccount? _account;
   String? _pkceCodeVerifier;
+  String? _state;
 
   bool _isAuthenticated = false;
 
@@ -37,9 +38,19 @@ class DropboxProvider extends CloudStorageProvider {
     required String appKey,
     required String appSecret,
     required String redirectUri,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   })  : _appKey = appKey,
         _appSecret = appSecret,
         _redirectUri = redirectUri {
+    _secureStorage = FlutterSecureStorage(
+      aOptions: AndroidOptions(
+        encryptedSharedPreferences: false,
+        sharedPreferencesName: sharedPreferencesName,
+      ),
+      iOptions: IOSOptions(
+        accessibility: KeychainAccessibility.first_unlock_this_device,
+      ),
+    );
     _initializeDio();
   }
 
@@ -51,6 +62,7 @@ class DropboxProvider extends CloudStorageProvider {
     required String redirectUri,
     bool forceInteractive = false,
     String? storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     debugPrint('connect Dropbox, forceInteractive: $forceInteractive');
     if (appKey.isEmpty || redirectUri.isEmpty) {
@@ -60,7 +72,8 @@ class DropboxProvider extends CloudStorageProvider {
     }
     try {
       final provider = DropboxProvider._create(
-          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri);
+          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri,
+          sharedPreferencesName: sharedPreferencesName);
       provider._storageKeyPrefix = storageKeyPrefix;
       // If interactive login is forced, clear any existing credentials.
       if (forceInteractive) {
@@ -120,6 +133,7 @@ class DropboxProvider extends CloudStorageProvider {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     if (appKey.isEmpty || redirectUri.isEmpty) {
       debugPrint(
@@ -128,7 +142,8 @@ class DropboxProvider extends CloudStorageProvider {
     }
     try {
       final provider = DropboxProvider._create(
-          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri);
+          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri,
+          sharedPreferencesName: sharedPreferencesName);
       provider._storageKeyPrefix = storageKeyPrefix;
       provider._token = DropboxToken(
         accessToken: accessToken,
@@ -158,10 +173,12 @@ class DropboxProvider extends CloudStorageProvider {
     required String appSecret,
     required String redirectUri,
     required String storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     try {
       final provider = DropboxProvider._create(
-          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri);
+          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri,
+          sharedPreferencesName: sharedPreferencesName);
       provider._storageKeyPrefix = storageKeyPrefix;
       final token = await provider._getToken();
       if (token == null) return null;
@@ -567,7 +584,7 @@ class DropboxProvider extends CloudStorageProvider {
       }
       // M-05 fix: 仅将 path_lookup/not_found 类型的 409 当作 NotFoundException，
       // 其他 409 错误（如 path/conflict、too_many_write_operations）应正常抛出
-      if (e.response?.statusCode == 409) {
+      if (e.response?.statusCode == 409 && e.response?.data is Map) {
         final errorSummary = e.response?.data?['error_summary'] as String?;
         if (errorSummary != null && errorSummary.contains('path_lookup/not_found')) {
           throw NotFoundException(e.message ?? e.toString());
@@ -724,13 +741,22 @@ class DropboxProvider extends CloudStorageProvider {
           throw TimeoutException('OAuth authentication timed out');
         },
       );
-      final code = Uri.parse(result).queryParameters['code'];
+      final resultUri = Uri.parse(result);
+      // 验证 state 参数防止 CSRF 攻击
+      final returnedState = resultUri.queryParameters['state'];
+      if (returnedState != _state) {
+        debugPrint('Dropbox auth state mismatch - possible CSRF attack');
+        return null;
+      }
+      final code = resultUri.queryParameters['code'];
       if (code != null) {
         debugPrint('Received authorization code from redirect.');
+        _state = null;
         return code;
       } else {
-        final error = Uri.parse(result).queryParameters['error_description'] ?? 'Unknown error';
+        final error = resultUri.queryParameters['error_description'] ?? 'Unknown error';
         debugPrint('Dropbox auth failed from redirect: $error');
+        _state = null;
         return null;
       }
     } catch (e) {
@@ -812,6 +838,10 @@ class DropboxProvider extends CloudStorageProvider {
     if (path.isEmpty || path == '/') {
       return ''; // Root is an empty string for Dropbox API.
     }
+    // Dropbox 文件 ID（如 id:abc123）应原样传递，不添加前导 /
+    if (path.startsWith('id:')) {
+      return path;
+    }
     return p.url.normalize(path.startsWith('/') ? path : '/$path');
   }
 
@@ -834,6 +864,7 @@ class DropboxProvider extends CloudStorageProvider {
   /// Constructs the full authorization URL for the OAuth2 PKCE flow.
   String _getAuthorizationUrl() {
     _pkceCodeVerifier = _generateCodeVerifier();
+    _state = _generateState();
     final queryParams = {
       'client_id': _appKey,
       'response_type': 'code',
@@ -841,6 +872,7 @@ class DropboxProvider extends CloudStorageProvider {
       'token_access_type': 'offline', // To get a refresh token
       'code_challenge_method': 'S256',
       'code_challenge': _generateCodeChallengeS256(_pkceCodeVerifier!),
+      'state': _state,
       'scope':
           'account_info.read files.content.read files.content.write sharing.write',
       'force_login': 'true', // Allow multi-user login by forcing account selection
@@ -863,6 +895,13 @@ class DropboxProvider extends CloudStorageProvider {
     return base64Url
         .encode(sha256.convert(utf8.encode(verifier)).bytes)
         .replaceAll('=', ''); // base64url encoding must not have padding.
+  }
+
+  // 生成随机 state 参数，防止 CSRF 攻击
+  String _generateState() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    return base64Url.encode(bytes).replaceAll('=', '');
   }
 }
 

@@ -19,13 +19,15 @@ class MultiCloudStorage {
           required String appSecret,
           required String redirectUri,
           bool forceInteractive = false,
-          String? storageKeyPrefix}) =>
+          String? storageKeyPrefix,
+          String sharedPreferencesName = 'musicgather_secure_storage'}) =>
       DropboxProvider.connect(
           appKey: appKey,
           appSecret: appSecret,
           redirectUri: redirectUri,
           forceInteractive: forceInteractive,
-          storageKeyPrefix: storageKeyPrefix);
+          storageKeyPrefix: storageKeyPrefix,
+          sharedPreferencesName: sharedPreferencesName);
 
   static Future<CloudStorageProvider?> connectToGoogleDrive(
           {bool forceInteractive = false,
@@ -59,12 +61,14 @@ class MultiCloudStorage {
     required String redirectUri,
     String? scopes,
     String? storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) =>
       OneDriveProvider.connect(
           clientId: clientId,
           redirectUri: redirectUri,
           scopes: scopes,
-          storageKeyPrefix: storageKeyPrefix);
+          storageKeyPrefix: storageKeyPrefix,
+          sharedPreferencesName: sharedPreferencesName);
 
   static Future<CloudStorageProvider?> connectToDropboxWithToken({
     required String appKey,
@@ -74,6 +78,7 @@ class MultiCloudStorage {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) =>
       DropboxProvider.connectWithToken(
           appKey: appKey,
@@ -82,7 +87,8 @@ class MultiCloudStorage {
           accessToken: accessToken,
           refreshToken: refreshToken,
           expiresIn: expiresIn,
-          storageKeyPrefix: storageKeyPrefix);
+          storageKeyPrefix: storageKeyPrefix,
+          sharedPreferencesName: sharedPreferencesName);
 
   static Future<CloudStorageProvider?> connectToOneDriveWithToken({
     required String clientId,
@@ -91,6 +97,7 @@ class MultiCloudStorage {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) =>
       OneDriveProvider.connectWithToken(
           clientId: clientId,
@@ -98,7 +105,8 @@ class MultiCloudStorage {
           accessToken: accessToken,
           refreshToken: refreshToken,
           expiresIn: expiresIn,
-          storageKeyPrefix: storageKeyPrefix);
+          storageKeyPrefix: storageKeyPrefix,
+          sharedPreferencesName: sharedPreferencesName);
 
   static Future<CloudStorageProvider?> loadFromStorage({
     required CloudStorageType type,
@@ -108,6 +116,7 @@ class MultiCloudStorage {
     String? redirectUri,
     String? clientId,
     String? clientSecret,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     switch (type) {
       case CloudStorageType.dropbox:
@@ -117,6 +126,7 @@ class MultiCloudStorage {
           appSecret: appSecret,
           redirectUri: redirectUri,
           storageKeyPrefix: storageKeyPrefix,
+          sharedPreferencesName: sharedPreferencesName,
         );
       case CloudStorageType.oneDrive:
         if (clientId == null || redirectUri == null) return null;
@@ -124,6 +134,7 @@ class MultiCloudStorage {
           clientId: clientId,
           redirectUri: redirectUri,
           storageKeyPrefix: storageKeyPrefix,
+          sharedPreferencesName: sharedPreferencesName,
         );
       case CloudStorageType.googleDrive:
         // M-02 fix: Google Drive 依赖 SDK 静默登录，不支持 loadFromStorage，抛出 UnsupportedError

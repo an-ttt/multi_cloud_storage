@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -19,13 +21,25 @@ class OneDriveProvider extends CloudStorageProvider {
   String? _refreshToken;
   DateTime? _tokenExpiry;
   late Dio _dio;
-  final _secureStorage = const FlutterSecureStorage();
+  late final FlutterSecureStorage _secureStorage;
   String? _storageKeyPrefix;
+  String? _pkceCodeVerifier;
+  String? _state;
 
   OneDriveProvider._({
     required this.clientId,
     required this.redirectUri,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) {
+    _secureStorage = FlutterSecureStorage(
+      aOptions: AndroidOptions(
+        encryptedSharedPreferences: false,
+        sharedPreferencesName: sharedPreferencesName,
+      ),
+      iOptions: IOSOptions(
+        accessibility: KeychainAccessibility.first_unlock_this_device,
+      ),
+    );
     _initializeDio();
   }
 
@@ -34,6 +48,7 @@ class OneDriveProvider extends CloudStorageProvider {
     required String redirectUri,
     String? scopes,
     String? storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     if (clientId.trim().isEmpty) {
       throw ArgumentError(
@@ -46,6 +61,7 @@ class OneDriveProvider extends CloudStorageProvider {
       final provider = OneDriveProvider._(
         clientId: clientId,
         redirectUri: redirectUri,
+        sharedPreferencesName: sharedPreferencesName,
       );
       provider._storageKeyPrefix = storageKeyPrefix;
       final effectiveScopes = scopes ??
@@ -69,6 +85,7 @@ class OneDriveProvider extends CloudStorageProvider {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     if (clientId.trim().isEmpty) {
       throw ArgumentError(
@@ -81,6 +98,7 @@ class OneDriveProvider extends CloudStorageProvider {
       final provider = OneDriveProvider._(
         clientId: clientId,
         redirectUri: redirectUri,
+        sharedPreferencesName: sharedPreferencesName,
       );
       provider._storageKeyPrefix = storageKeyPrefix;
       provider._accessToken = accessToken;
@@ -102,11 +120,13 @@ class OneDriveProvider extends CloudStorageProvider {
     required String clientId,
     required String redirectUri,
     required String storageKeyPrefix,
+    String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     try {
       final provider = OneDriveProvider._(
         clientId: clientId,
         redirectUri: redirectUri,
+        sharedPreferencesName: sharedPreferencesName,
       );
       provider._storageKeyPrefix = storageKeyPrefix;
       final accessTokenKey = '${storageKeyPrefix}access_token';
@@ -178,9 +198,11 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<void> _performOAuthLogin(String scopes) async {
     final isWindows = Platform.isWindows;
     final isAndroid = Platform.isAndroid;
-    // Windows: 使用 useWebview: true 时，webview 会拦截回调 URL，
-    // 不需要本地服务器，因此直接使用 Azure AD 中注册的 redirectUri（如 nativeclient），
-    // 避免动态 localhost 端口未在 Azure AD 注册导致 redirect_uri_mismatch 错误
+
+    // 生成 PKCE 和 state 参数
+    _pkceCodeVerifier = _generateCodeVerifier();
+    _state = _generateState();
+
     final effectiveRedirectUri = redirectUri;
     
     final authUrl = Uri.https('login.microsoftonline.com', 'common/oauth2/v2.0/authorize', {
@@ -190,12 +212,13 @@ class OneDriveProvider extends CloudStorageProvider {
       'scope': scopes,
       'prompt': 'select_account',
       'response_mode': 'query',
+      'state': _state,
+      'code_challenge_method': 'S256',
+      'code_challenge': _generateCodeChallengeS256(_pkceCodeVerifier!),
     });
     final callbackScheme = effectiveRedirectUri.split('://')[0];
     FlutterWebAuth2Options options;
     if (isWindows) {
-      // Windows: 使用 webview 方式（useWebview: true），配合 httpsHost/httpsPath 过滤回调 URL
-      // webview 会拦截导航到 redirectUri 的请求，从中提取授权码
       final redirectUriParsed = Uri.parse(effectiveRedirectUri);
       if (redirectUriParsed.scheme == 'https' || redirectUriParsed.scheme == 'http') {
         options = FlutterWebAuth2Options(
@@ -211,12 +234,13 @@ class OneDriveProvider extends CloudStorageProvider {
     } else if (callbackScheme == 'https' || callbackScheme == 'http') {
       final redirectUriParsed = Uri.parse(effectiveRedirectUri);
       options = FlutterWebAuth2Options(
-        // 🎯 传入 FlutterWebAuth2Options 解决 Android AuthTabIntent 兼容性问题：
-        // 1. preferEphemeral: false → 允许共享浏览器会话，使第三方登录
-        //    能识别已登录的账号，避免每次重新输入（true 会以隐身模式打开，隔离 Cookie）
-        // 2. customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
-        //    Chrome 对 AuthTabIntent 支持完善，无需 preferEphemeral 触发回退
+        // 🎯 preferEphemeral: false → 允许共享浏览器会话，使第三方登录
+        //    能识别已登录的账号，避免每次重新输入
+        // 🎯 customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
+        // 🎯 flutter_web_auth_2 v5.0+ 默认使用 Auth Tab（Chrome 141+），
+        //    已修复 WebAuthn/FIDO2 Passkey 兼容性问题
         // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
+        // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/184
         preferEphemeral: false,
         httpsHost: redirectUriParsed.host,
         httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
@@ -230,7 +254,6 @@ class OneDriveProvider extends CloudStorageProvider {
     }
     // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截回调，
     // 导致 FlutterWebAuth2.authenticate() 的 Future 永远不会 resolve。
-    // 超时后抛出 TimeoutException，由调用方处理。
     final result = await FlutterWebAuth2.authenticate(
       url: authUrl.toString(),
       callbackUrlScheme: callbackScheme,
@@ -242,11 +265,19 @@ class OneDriveProvider extends CloudStorageProvider {
         throw TimeoutException('OneDrive OAuth authentication timed out');
       },
     );
-    final code = Uri.parse(result).queryParameters['code'];
+    final resultUri = Uri.parse(result);
+    // 验证 state 参数防止 CSRF 攻击
+    final returnedState = resultUri.queryParameters['state'];
+    if (returnedState != _state) {
+      throw Exception('OAuth state mismatch - possible CSRF attack');
+    }
+    final code = resultUri.queryParameters['code'];
     if (code == null) {
       throw Exception('Authorization code not found');
     }
     await _exchangeCodeForToken(code, scopes, effectiveRedirectUri);
+    _pkceCodeVerifier = null;
+    _state = null;
   }
 
   // M-21 fix: 使用 Dio 替代 http 包，统一超时配置
@@ -256,15 +287,19 @@ class OneDriveProvider extends CloudStorageProvider {
       sendTimeout: const Duration(seconds: 30),
       receiveTimeout: const Duration(seconds: 30),
     ));
+    final data = {
+      'client_id': clientId,
+      'redirect_uri': effectiveRedirectUri ?? redirectUri,
+      'grant_type': 'authorization_code',
+      'code': code,
+      'scope': scopes,
+    };
+    if (_pkceCodeVerifier != null) {
+      data['code_verifier'] = _pkceCodeVerifier!;
+    }
     final response = await dioForToken.post(
       'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-      data: {
-        'client_id': clientId,
-        'redirect_uri': effectiveRedirectUri ?? redirectUri,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'scope': scopes,
-      },
+      data: data,
       options: Options(contentType: 'application/x-www-form-urlencoded'),
     );
     if (response.statusCode != 200) {
@@ -291,7 +326,6 @@ class OneDriveProvider extends CloudStorageProvider {
       'https://login.microsoftonline.com/common/oauth2/v2.0/token',
       data: {
         'client_id': clientId,
-        'redirect_uri': redirectUri,
         'grant_type': 'refresh_token',
         'refresh_token': _refreshToken,
       },
@@ -925,6 +959,29 @@ class OneDriveProvider extends CloudStorageProvider {
     final cleanPath = path.startsWith('/') ? path.substring(1) : path;
     if (cleanPath.isEmpty) return '';
     return cleanPath.split('/').map(Uri.encodeComponent).join('/');
+  }
+
+  // PKCE code_verifier 生成：128 字符，使用 cryptographically secure 随机数
+  // 符合 RFC 7636 §4.1（43-128 字符，unreserved 字符集 [A-Za-z0-9-._~]）
+  String _generateCodeVerifier() {
+    const charset = 'AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789-._~';
+    final random = Random.secure();
+    return List.generate(128, (_) => charset[random.nextInt(charset.length)]).join();
+  }
+
+  // PKCE code_challenge 计算：BASE64URL(SHA256(code_verifier))，去除 '=' 填充
+  // 符合 RFC 7636 §4.2
+  String _generateCodeChallengeS256(String codeVerifier) {
+    final bytes = utf8.encode(codeVerifier);
+    final digest = sha256.convert(bytes);
+    return base64Url.encode(digest.bytes).replaceAll('=', '');
+  }
+
+  // 生成随机 state 参数，防止 CSRF 攻击
+  String _generateState() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+    return base64Url.encode(bytes).replaceAll('=', '');
   }
 }
 

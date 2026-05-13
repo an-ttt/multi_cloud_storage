@@ -16,10 +16,8 @@ dependencies:
   path: ^1.9.1
   http: ^1.6.0
   flutter_web_auth_2: ^5.0.2
-  url_launcher: ^6.3.2
   dio: ^5.9.2
   crypto: ^3.0.7
-  app_links: ^7.0.0
   flutter_secure_storage: ^9.2.4
   icloud_storage_sync: ^0.0.4
   googleapis_auth: ^2.0.0
