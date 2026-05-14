@@ -74,6 +74,11 @@ class MultiCloudStorage {
     }
   }
 
+  // 🎯 Dropbox 清除默认 key 下的残留 token，确保新建账户时走交互式 OAuth 流程
+  static Future<void> clearDropboxDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+    await DropboxProvider.clearDefaultToken(sharedPreferencesName: sharedPreferencesName);
+  }
+
   static Future<CloudStorageProvider?> connectToIcloud(
           {required String containerId}) =>
       ICloudProvider.connect(containerId: containerId);

@@ -930,6 +930,22 @@ class DropboxProvider extends CloudStorageProvider {
     final bytes = List<int>.generate(32, (_) => random.nextInt(256));
     return base64Url.encode(bytes).replaceAll('=', '');
   }
+
+  // 🎯 静态方法：清除默认 key 下的残留 token，确保新建账户时走交互式 OAuth 流程
+  // 注意：这不是"登出"，只清除 SecureStorage 中的默认 key，不影响其他账户的 account-specific key
+  static Future<void> clearDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+    final storage = FlutterSecureStorage(
+      aOptions: AndroidOptions(
+        encryptedSharedPreferences: false,
+        sharedPreferencesName: sharedPreferencesName,
+      ),
+      iOptions: IOSOptions(
+        accessibility: KeychainAccessibility.first_unlock_this_device,
+      ),
+    );
+    await storage.delete(key: _kDropboxTokenKey);
+    debugPrint('Dropbox default token cleared.');
+  }
 }
 
 /// Represents an OAuth2 token for the Dropbox API.
