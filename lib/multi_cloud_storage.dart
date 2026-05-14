@@ -52,6 +52,28 @@ class MultiCloudStorage {
       }
   }
 
+  // 🎯 Google Drive SDK 静态登出：清理 SDK 缓存的登录状态
+  static Future<void> signOutGoogleDrive() async {
+    if (Platform.isWindows || Platform.isLinux) {
+      // 桌面端暂不需要
+    } else {
+      await GoogleDriveProvider.signOutCurrent();
+    }
+  }
+
+  // 🎯 Google Drive 静默登录验证：检查 SDK 缓存凭据是否有效
+  static Future<bool> verifyGoogleDriveSilentLogin({
+    String? serverClientId,
+  }) async {
+    if (Platform.isWindows || Platform.isLinux) {
+      return false;
+    } else {
+      return GoogleDriveProvider.verifySilentLogin(
+        serverClientId: serverClientId,
+      );
+    }
+  }
+
   static Future<CloudStorageProvider?> connectToIcloud(
           {required String containerId}) =>
       ICloudProvider.connect(containerId: containerId);

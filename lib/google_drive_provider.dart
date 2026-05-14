@@ -67,12 +67,12 @@ class GoogleDriveProvider extends CloudStorageProvider {
         );
       }
       GoogleSignInAccount? account;
-      if (!forceInteractive) {
-        final lightweightResult =
-            GoogleSignIn.instance.attemptLightweightAuthentication();
-        if (lightweightResult != null) {
-          account = await lightweightResult;
-        }
+      // 🎯 优化：永远先调 attemptLightweightAuthentication()，即使 forceInteractive=true
+      // 静默登录成功则避免触发 authenticate() 导致的 "Account reauth failed" 错误
+      final lightweightResult =
+          GoogleSignIn.instance.attemptLightweightAuthentication();
+      if (lightweightResult != null) {
+        account = await lightweightResult;
       }
       if (account == null) {
         try {
@@ -81,6 +81,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
         } on GoogleSignInException catch (e) {
           debugPrint('Google Sign-In error: $e');
           if (e.code == GoogleSignInExceptionCode.canceled) {
+            // 🎯 区分用户主动取消和系统 reauth 失败
+            if (e.toString().contains('reauth')) {
+              throw GoogleSignInReauthRequiredException(e);
+            }
             return null;
           }
           rethrow;
@@ -451,8 +455,51 @@ class GoogleDriveProvider extends CloudStorageProvider {
     }
   }
 
+  // 🎯 静态登出方法：在 OAuth 前清理 SDK 缓存的登录状态，确保新用户可以登录
+  static Future<void> signOutCurrent() async {
+    try {
+      await GoogleSignIn.instance.disconnect();
+      await GoogleSignIn.instance.signOut();
+      debugPrint('Google Drive SDK signed out (static).');
+    } catch (error) {
+      debugPrint('Failed to sign out Google Drive SDK (static): $error');
+    }
+  }
+
+  // 🎯 静默登录验证：检查 SDK 缓存的凭据是否仍然有效，不弹出 UI
+  static Future<bool> verifySilentLogin({
+    String? serverClientId,
+  }) async {
+    try {
+      if (!_initialized && serverClientId != null) {
+        await GoogleSignIn.instance.initialize(serverClientId: serverClientId);
+        _initialized = true;
+        _initializedServerClientId = serverClientId;
+      }
+      final lightweightResult =
+          GoogleSignIn.instance.attemptLightweightAuthentication();
+      if (lightweightResult != null) {
+        final account = await lightweightResult;
+        if (account != null) {
+          debugPrint('Google Drive silent login verified: ${account.email}');
+          return true;
+        }
+      }
+      debugPrint('Google Drive silent login failed: no cached account');
+      return false;
+    } catch (e) {
+      debugPrint('Google Drive silent login verification failed: $e');
+      return false;
+    }
+  }
+
   Future<T> _executeRequest<T>(Future<T> Function() request, {int authRetryCount = 0}) async {
     _checkAuth();
+    // 🎯 优化：每次 API 请求前刷新授权，通过 authorizeScopes() 获取最新令牌
+    // 而非依赖持久化的 AuthClient 中的过期 token
+    if (authRetryCount == 0) {
+      await _refreshAuthClient();
+    }
     try {
       return await request();
     } on drive.DetailedApiRequestError catch (e, stackTrace) {
@@ -480,6 +527,29 @@ class GoogleDriveProvider extends CloudStorageProvider {
     if (!isAuthenticated) {
       throw Exception(
           'GoogleDriveProvider: Not authenticated. Call connect() first.');
+    }
+  }
+
+  // 🎯 通过 authorizeScopes() 获取最新令牌并重建 AuthClient，而非依赖持久化 token
+  Future<void> _refreshAuthClient() async {
+    if (_currentAccount == null) return;
+    try {
+      final newAuthorization = await _currentAccount!.authorizationClient
+          .authorizeScopes(GoogleDriveProvider.scopes);
+      _currentAuthorization = newAuthorization;
+      final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
+      _authClient?.close();
+      _authClient = client;
+      final retryClient = RetryClient(
+        client,
+        retries: 3,
+        when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+        onRetry: (request, response, retryCount) => debugPrint(
+            'Retrying request to ${request.url} (Retry #$retryCount)'),
+      );
+      driveApi = drive.DriveApi(retryClient);
+    } catch (e) {
+      debugPrint('Google Drive _refreshAuthClient failed: $e');
     }
   }
 
@@ -694,3 +764,12 @@ Future<GoogleDriveProvider?> connectToGoogleDrive(
         serverClientId: serverClientId,
         clientSecret: clientSecret,
         redirectPort: redirectPort);
+
+// 🎯 Google Sign-In reauth 失败专用异常，区分用户主动取消和系统 reauth 失败
+class GoogleSignInReauthRequiredException implements Exception {
+  GoogleSignInReauthRequiredException(this.originalError);
+  final Object originalError;
+
+  @override
+  String toString() => 'GoogleSignInReauthRequiredException: $originalError';
+}
