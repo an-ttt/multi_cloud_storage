@@ -80,6 +80,16 @@ abstract class CloudStorageProvider {
   Future<String?> loggedInUserEmail();
 
   Future<String?> loggedInUserId();
+
+  // 🎯 路径规范化虚函数，子类可 override 以适配不同云存储的 ID/路径格式
+  // 默认实现：确保路径以 / 开头，Dropbox id: 前缀原样传递
+  // Google Drive 等 provider 可 override 为原样传递（file ID 不需要路径规范化）
+  String normalizePath(String path) {
+    if (path.isEmpty) return '/';
+    if (path == 'root') return '/';
+    if (path.startsWith('id:')) return path;
+    return path.startsWith('/') ? path : '/$path';
+  }
 }
 
 /// Represents a file or directory within the cloud storage.

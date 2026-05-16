@@ -64,9 +64,13 @@ class MultiCloudStorage {
   // 🎯 Google Drive 静默登录验证：检查 SDK 缓存凭据是否有效
   static Future<bool> verifyGoogleDriveSilentLogin({
     String? serverClientId,
+    String? clientSecret,
   }) async {
     if (Platform.isWindows || Platform.isLinux) {
-      return false;
+      return GoogleDriveProviderDesktop.verifySilentLogin(
+        serverClientId: serverClientId,
+        clientSecret: clientSecret,
+      );
     } else {
       return GoogleDriveProvider.verifySilentLogin(
         serverClientId: serverClientId,

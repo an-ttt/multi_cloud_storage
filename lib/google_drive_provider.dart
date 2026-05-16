@@ -201,14 +201,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
     required String localPath,
   }) {
     return _executeRequest(() async {
-      final file = await _getFileByPath(remotePath);
-      if (file == null || file.id == null) {
+      final fileId = await _resolveFileId(remotePath);
+      if (fileId == null) {
         throw Exception('GoogleDriveProvider: File not found at $remotePath');
       }
       final output = File(localPath);
       final sink = output.openWrite();
       try {
-        final media = await driveApi.files.get(file.id!,
+        final media = await driveApi.files.get(fileId,
             downloadOptions: drive.DownloadOptions.fullMedia) as drive.Media;
         await media.stream.pipe(sink);
       } catch (e) {
@@ -230,11 +230,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
     Map<String, dynamic>? metadata,
   }) {
     return _executeRequest(() async {
-      final existingFile = await _getFileByPath(remotePath);
-      if (existingFile != null && existingFile.id != null) {
+      final existingFileId = await _resolveFileId(remotePath);
+      if (existingFileId != null) {
         return uploadFileByShareToken(
           localPath: localPath,
-          shareToken: existingFile.id!,
+          shareToken: existingFileId,
           metadata: metadata,
         );
       } else {
@@ -256,9 +256,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   @override
   Future<void> deleteFile(String path) {
     return _executeRequest(() async {
-      final file = await _getFileByPath(path);
-      if (file != null && file.id != null) {
-        await driveApi.files.delete(file.id!);
+      final fileId = await _resolveFileId(path);
+      if (fileId != null) {
+        await driveApi.files.delete(fileId);
       }
     });
   }
@@ -273,7 +273,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
   @override
   Future<CloudFile> getFileMetadata(String path) {
     return _executeRequest(() async {
-      final file = await _getFileByPath(path);
+      final file = await _getFileByIdOrPath(path);
       if (file == null) {
         throw Exception('GoogleDriveProvider: File not found at $path');
       }
@@ -306,13 +306,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
     required int length,
   }) {
     return _executeRequest(() async {
-      final file = await _getFileByPath(path);
-      if (file == null || file.id == null) {
+      final fileId = await _resolveFileId(path);
+      if (fileId == null) {
         throw Exception('GoogleDriveProvider: File not found at $path');
       }
       final end = offset + length - 1;
       final media = await driveApi.files.get(
-        file.id!,
+        fileId,
         downloadOptions: drive.PartialDownloadOptions(drive.ByteRange(offset, end)),
       ) as drive.Media;
       final bytes = await media.stream.fold<BytesBuilder>(
@@ -325,10 +325,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
   @override
   Future<String?> getDownloadUrl(String path) {
     return _executeRequest(() async {
-      final file = await _getFileByPath(path);
-      if (file == null || file.id == null) return null;
+      final fileId = await _resolveFileId(path);
+      if (fileId == null) return null;
       final metadata = await driveApi.files
-          .get(file.id!, $fields: 'id,webContentLink') as drive.File;
+          .get(fileId, $fields: 'id,webContentLink') as drive.File;
       return metadata.webContentLink;
     });
   }
@@ -367,16 +367,16 @@ class GoogleDriveProvider extends CloudStorageProvider {
   @override
   Future<Uri?> generateShareLink(String path) {
     return _executeRequest(() async {
-      final drive.File? file = await _getFileByPath(path);
-      if (file == null || file.id == null) {
+      final fileId = await _resolveFileId(path);
+      if (fileId == null) {
         return null;
       }
       final permission = drive.Permission()
         ..type = 'anyone'
         ..role = 'writer';
-      await driveApi.permissions.create(permission, file.id!, $fields: 'id');
+      await driveApi.permissions.create(permission, fileId, $fields: 'id');
       final fileMetadata = await driveApi.files
-          .get(file.id!, $fields: 'id, name, webViewLink') as drive.File;
+          .get(fileId, $fields: 'id, name, webViewLink') as drive.File;
       if (fileMetadata.webViewLink == null) {
         return null;
       }
@@ -618,6 +618,38 @@ class GoogleDriveProvider extends CloudStorageProvider {
     return currentFolder;
   }
 
+  // 🎯 判断字符串是否像 Google Drive file ID
+  // Google Drive file ID 是 Base64url 编码的字符串，特征：不含 / 和 \，长度 > 10
+  static bool _isFileId(String str) {
+    if (str.isEmpty || str == 'root' || str == 'appDataFolder') return false;
+    if (str.contains('/') || str.contains('\\')) return false;
+    return str.length > 10;
+  }
+
+  // 🎯 将输入解析为 Google Drive file ID
+  // 如果输入已经是 file ID，直接返回，无需 API 调用
+  // 如果输入是路径，通过 _getFileByPath 解析获取 file ID
+  Future<String?> _resolveFileId(String input) async {
+    if (_isFileId(input)) return input;
+    final file = await _getFileByPath(input);
+    return file?.id;
+  }
+
+  // 🎯 优先用 file ID 直接获取完整文件对象，fallback 到路径查找
+  // 仅用于需要完整 drive.File 对象的场景（如 getFileMetadata）
+  // 只需 file ID 的场景应使用 _resolveFileId，避免多余的 API 调用
+  Future<drive.File?> _getFileByIdOrPath(String str) async {
+    if (_isFileId(str)) {
+      try {
+        final file = await driveApi.files.get(str, $fields: 'id, name, size, modifiedTime, mimeType, parents') as drive.File;
+        if (file.id != null) return file;
+      } catch (e) {
+        debugPrint('GoogleDriveProvider: direct ID lookup failed for "$str", falling back to path lookup: $e');
+      }
+    }
+    return _getFileByPath(str);
+  }
+
   Future<drive.File?> _getFileByPath(String filePath) async {
     if (filePath.isEmpty || filePath == '.' || filePath == '/') {
       return (filePath == '/' || filePath == '.') ? _getRootFolder() : null;
@@ -750,6 +782,15 @@ class GoogleDriveProvider extends CloudStorageProvider {
   // Google Drive uses SDK-managed tokens, no storage migration needed
   @override
   Future<void> saveToStorage(String storageKeyPrefix) async {}
+
+  // 🎯 Google Drive 的 file ID 不需要路径规范化，原样传递
+  // GoogleDriveProvider 内部的 _getFileByIdOrPath 会自动判断是 file ID 还是路径
+  @override
+  String normalizePath(String path) {
+    if (path.isEmpty) return '/';
+    if (path == 'root') return '/';
+    return path;
+  }
 }
 
 Future<GoogleDriveProvider?> connectToGoogleDrive(
