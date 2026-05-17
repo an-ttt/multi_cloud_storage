@@ -203,7 +203,19 @@ class OneDriveProvider extends CloudStorageProvider {
     _pkceCodeVerifier = _generateCodeVerifier();
     _state = _generateState();
 
-    final effectiveRedirectUri = redirectUri;
+    // 🎯 Android 端使用自定义 Scheme 回调（msal{clientId}://auth），
+    //    避免 Auth Tab 的 https 回调拦截不可靠问题
+    // 自定义 Scheme 通过 Android Intent 系统路由到 CallbackActivity，
+    // 不依赖 Auth Tab 的 ActivityResultLauncher 连接
+    String effectiveRedirectUri;
+    String callbackScheme;
+    if (isAndroid) {
+      effectiveRedirectUri = 'msal$clientId://auth';
+      callbackScheme = 'msal$clientId';
+    } else {
+      effectiveRedirectUri = redirectUri;
+      callbackScheme = effectiveRedirectUri.split('://')[0];
+    }
     
     final authUrl = Uri.https('login.microsoftonline.com', 'common/oauth2/v2.0/authorize', {
       'client_id': clientId,
@@ -216,10 +228,9 @@ class OneDriveProvider extends CloudStorageProvider {
       'code_challenge_method': 'S256',
       'code_challenge': _generateCodeChallengeS256(_pkceCodeVerifier!),
     });
-    final callbackScheme = effectiveRedirectUri.split('://')[0];
     FlutterWebAuth2Options options;
     if (isWindows) {
-      final redirectUriParsed = Uri.parse(effectiveRedirectUri);
+      final redirectUriParsed = Uri.parse(redirectUri);
       if (redirectUriParsed.scheme == 'https' || redirectUriParsed.scheme == 'http') {
         options = FlutterWebAuth2Options(
           useWebview: true,
@@ -231,25 +242,29 @@ class OneDriveProvider extends CloudStorageProvider {
           useWebview: true,
         );
       }
-    } else if (callbackScheme == 'https' || callbackScheme == 'http') {
-      final redirectUriParsed = Uri.parse(effectiveRedirectUri);
+    } else if (isAndroid) {
+      // 🎯 Android: 自定义 Scheme 回调
+      // Custom Tabs / Auth Tab 完美支持 WebAuthn/FIDO2，
+      // 使用自定义 Scheme 回调通过 CallbackActivity 拦截，比 https 回调更可靠
       options = FlutterWebAuth2Options(
         // 🎯 preferEphemeral: false → 允许共享浏览器会话，使第三方登录
         //    能识别已登录的账号，避免每次重新输入
         // 🎯 customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
-        // 🎯 flutter_web_auth_2 v5.0+ 默认使用 Auth Tab（Chrome 141+），
-        //    已修复 WebAuthn/FIDO2 Passkey 兼容性问题
-        // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
-        // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/184
+        preferEphemeral: false,
+        customTabsPackageOrder: ['com.android.chrome'],
+      );
+    } else if (callbackScheme == 'https' || callbackScheme == 'http') {
+      // iOS: https 回调
+      final redirectUriParsed = Uri.parse(effectiveRedirectUri);
+      options = FlutterWebAuth2Options(
         preferEphemeral: false,
         httpsHost: redirectUriParsed.host,
         httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
-        customTabsPackageOrder: isAndroid ? ['com.android.chrome'] : null,
       );
     } else {
+      // iOS: 自定义 Scheme 回调
       options = FlutterWebAuth2Options(
         preferEphemeral: false,
-        customTabsPackageOrder: isAndroid ? ['com.android.chrome'] : null,
       );
     }
     // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截回调，

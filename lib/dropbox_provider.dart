@@ -618,6 +618,7 @@ class DropboxProvider extends CloudStorageProvider {
   /// Initializes the Dio HTTP client with interceptors for auth and token refresh.
   void _initializeDio() {
     _dio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 30),
         sendTimeout: const Duration(seconds: 30),
         receiveTimeout: const Duration(seconds: 30)));
     _dio.interceptors.add(InterceptorsWrapper(
@@ -680,7 +681,7 @@ class DropboxProvider extends CloudStorageProvider {
     }
     debugPrint('Executing Dropbox token refresh request.');
     final dioForToken = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 10),
+      connectTimeout: const Duration(seconds: 30),
       sendTimeout: const Duration(seconds: 30),
       receiveTimeout: const Duration(seconds: 30),
     ));
@@ -741,14 +742,17 @@ class DropboxProvider extends CloudStorageProvider {
         );
       } else {
         // 🎯 移动端：传入 FlutterWebAuth2Options 解决 Android AuthTabIntent 兼容性问题：
-        // 1. preferEphemeral: false → 允许共享浏览器会话，使 Google 等第三方登录
-        //    能识别已登录的账号，避免每次重新输入（true 会以隐身模式打开，隔离 Cookie）
+        // 1. preferEphemeral: true → 使用隐身模式打开 Chrome Custom Tab，隔离浏览器 Cookie，
+        //    强制用户重新输入凭据并选择账号，避免自动使用已登录的 Dropbox 账号。
+        //    权衡：Dropbox 登录页上的"使用 Google 登录"等第三方登录需重新认证，
+        //    但这是确保多账号选择功能的必要代价。
+        //    （OneDrive 不需要此设置，因为 Microsoft OAuth 的 prompt=select_account 参数
+        //    在共享 Cookie 场景下也能强制显示账号选择界面）
         // 2. customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
-        //    Chrome 对 AuthTabIntent 支持完善，无需 preferEphemeral 触发回退
-        //    （与 OneDrive provider 保持一致的做法）
+        //    Chrome 对 AuthTabIntent 支持完善
         // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
         options = FlutterWebAuth2Options(
-          preferEphemeral: false,
+          preferEphemeral: true,
           customTabsPackageOrder: Platform.isAndroid
               ? ['com.android.chrome']
               : null,
@@ -762,9 +766,9 @@ class DropboxProvider extends CloudStorageProvider {
         callbackUrlScheme: callbackScheme,
         options: options,
       ).timeout(
-        const Duration(minutes: 2),
+        const Duration(minutes: 5),
         onTimeout: () {
-          debugPrint('Dropbox interactive auth timed out after 2 minutes.');
+          debugPrint('Dropbox interactive auth timed out after 5 minutes.');
           throw TimeoutException('OAuth authentication timed out');
         },
       );
@@ -800,7 +804,7 @@ class DropboxProvider extends CloudStorageProvider {
     debugPrint('Exchanging authorization code for a token.');
     // 添加超时配置，防止 token 交换请求无限挂起
     final dioForToken = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 10),
+      connectTimeout: const Duration(seconds: 30),
       sendTimeout: const Duration(seconds: 30),
       receiveTimeout: const Duration(seconds: 30),
     ));
