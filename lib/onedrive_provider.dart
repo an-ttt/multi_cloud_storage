@@ -434,6 +434,22 @@ class OneDriveProvider extends CloudStorageProvider {
     _tokenExpiry = null;
   }
 
+  static Future<void> clearDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+    final storage = FlutterSecureStorage(
+      aOptions: AndroidOptions(
+        encryptedSharedPreferences: false,
+        sharedPreferencesName: sharedPreferencesName,
+      ),
+      iOptions: IOSOptions(
+        accessibility: KeychainAccessibility.first_unlock_this_device,
+      ),
+    );
+    await storage.delete(key: 'onedrive_access_token');
+    await storage.delete(key: 'onedrive_refresh_token');
+    await storage.delete(key: 'onedrive_token_expiry');
+    debugPrint('OneDrive default token cleared.');
+  }
+
   @override
   Future<List<CloudFile>> listFiles({
     String path = '',
@@ -471,9 +487,11 @@ class OneDriveProvider extends CloudStorageProvider {
 
   CloudFile _mapToCloudFile(Map<String, dynamic> item) {
     final isDirectory = item['folder'] != null;
-    final path = item['parentReference']?['path'] ?? '';
+    final rawPath = item['parentReference']?['path'] ?? '';
     final name = item['name'] as String;
-    final fullPath = path.isEmpty ? '/$name' : '$path/$name';
+    // 剥离 OneDrive parentReference.path 中的 /drive/root: 或 /drives/{id}/root: 前缀
+    final relativePath = rawPath.replaceFirst(RegExp(r'^/drive[^/]*/root:'), '');
+    final fullPath = relativePath.isEmpty ? '/$name' : '$relativePath/$name';
     return CloudFile(
       path: fullPath,
       name: name,
@@ -494,8 +512,13 @@ class OneDriveProvider extends CloudStorageProvider {
   }) {
     return _executeRequest(
       () async {
-        final encodedPath = _encodePath(remotePath);
-        final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+        final String url;
+        if (_isItemId(remotePath)) {
+          url = _buildItemUrl(remotePath, '/content');
+        } else {
+          final encodedPath = _encodePath(remotePath);
+          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+        }
         await _dio.download(
           url,
           localPath,
@@ -612,8 +635,13 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<void> deleteFile(String path) {
     return _executeRequest(
       () async {
-        final encodedPath = _encodePath(path);
-        final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath';
+        final String url;
+        if (_isItemId(path)) {
+          url = _buildItemUrl(path, '');
+        } else {
+          final encodedPath = _encodePath(path);
+          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath';
+        }
         await _dio.delete(
           url,
         );
@@ -653,8 +681,13 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<CloudFile> getFileMetadata(String path) {
     return _executeRequest(
       () async {
-        final encodedPath = _encodePath(path);
-        final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
+        final String url;
+        if (_isItemId(path)) {
+          url = _buildItemUrl(path, '?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType');
+        } else {
+          final encodedPath = _encodePath(path);
+          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
+        }
         final response = await _dio.get(
           url,
         );
@@ -688,8 +721,13 @@ class OneDriveProvider extends CloudStorageProvider {
     required int length,
   }) {
     return _executeRequest(() async {
-      final encodedPath = _encodePath(path);
-      final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+      final String url;
+      if (_isItemId(path)) {
+        url = _buildItemUrl(path, '/content');
+      } else {
+        final encodedPath = _encodePath(path);
+        url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+      }
       final response = await _dio.get(
         url,
         options: Options(
@@ -706,8 +744,13 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<String?> getDownloadUrl(String path) {
     return _executeRequest(() async {
-      final encodedPath = _encodePath(path);
-      final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=@content.downloadUrl';
+      final String url;
+      if (_isItemId(path)) {
+        url = _buildItemUrl(path, '?\$select=@content.downloadUrl');
+      } else {
+        final encodedPath = _encodePath(path);
+        url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=@content.downloadUrl';
+      }
       final response = await _dio.get(
         url,
       );
@@ -724,6 +767,9 @@ class OneDriveProvider extends CloudStorageProvider {
           await _refreshAccessToken();
         } catch (e) {
           debugPrint('OneDrive getAccessToken: token refresh failed: $e');
+          // 🎯 刷新失败时返回 null，而非过期的 _accessToken
+          // 返回过期 Token 会导致后续请求使用无效凭据
+          return null;
         }
       }
     }
@@ -975,6 +1021,28 @@ class OneDriveProvider extends CloudStorageProvider {
     final cleanPath = path.startsWith('/') ? path.substring(1) : path;
     if (cleanPath.isEmpty) return '';
     return cleanPath.split('/').map(Uri.encodeComponent).join('/');
+  }
+
+  // 🎯 OneDrive 的 normalizePath：识别 item ID 不添加 / 前缀
+  // item ID（如 ABCD1234!567）不应被当作路径处理
+  @override
+  String normalizePath(String path) {
+    if (path.isEmpty) return '/';
+    if (_isItemId(path)) return path;
+    return path.startsWith('/') ? path : '/$path';
+  }
+
+  // 🎯 判断字符串是否为 OneDrive item ID（而非文件路径）
+  // OneDrive item ID 特征：不含 /，且包含 ! 或 UUID 格式
+  static bool _isItemId(String str) {
+    if (str.isEmpty) return false;
+    if (str.contains('/')) return false;
+    return str.contains('!') || RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-').hasMatch(str);
+  }
+
+  // 🎯 构建 item ID 格式的 API URL
+  static String _buildItemUrl(String itemId, String suffix) {
+    return 'https://graph.microsoft.com/v1.0/me/drive/items/$itemId$suffix';
   }
 
   // PKCE code_verifier 生成：128 字符，使用 cryptographically secure 随机数

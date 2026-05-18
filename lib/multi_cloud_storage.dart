@@ -127,6 +127,10 @@ class MultiCloudStorage {
     await DropboxProvider.clearDefaultToken(sharedPreferencesName: sharedPreferencesName);
   }
 
+  static Future<void> clearOneDriveDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+    await OneDriveProvider.clearDefaultToken(sharedPreferencesName: sharedPreferencesName);
+  }
+
   static Future<CloudStorageProvider?> connectToIcloud(
           {required String containerId}) =>
       ICloudProvider.connect(containerId: containerId);
