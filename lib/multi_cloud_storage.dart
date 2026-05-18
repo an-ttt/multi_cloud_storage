@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import  'package:multi_cloud_storage/cloud_storage_provider.dart';
 import  'package:multi_cloud_storage/google_drive_provider.dart';
 import  'package:multi_cloud_storage/google_drive_provider_desktop.dart';
@@ -53,6 +54,49 @@ class MultiCloudStorage {
   }
 
   // 🎯 Google Drive SDK 静态登出：清理 SDK 缓存的登录状态
+  /// Google Drive 凭据验证：检查缓存凭据是否存在且有效
+  /// 先检查本地是否有缓存凭据（避免无凭据时触发浏览器/弹出 UI），
+  /// 再创建 provider 并通过实际 API 调用验证凭据有效性
+  static Future<CloudStorageProvider?> validateGoogleDriveCredentials({
+    String? serverClientId,
+    String? clientSecret,
+    List<String>? scopes,
+  }) async {
+    // 步骤1: 先检查本地是否有缓存凭据
+    final silentOk = await verifyGoogleDriveSilentLogin(
+      serverClientId: serverClientId,
+      clientSecret: clientSecret,
+    );
+    if (!silentOk) {
+      debugPrint('Google Drive: no cached credentials found during validation');
+      return null;
+    }
+
+    try {
+      // 步骤2: 使用缓存凭据创建 provider（非交互模式）
+      cloudAccess = CloudAccessType.fullAccess;
+      final provider = await connectToGoogleDrive(
+        serverClientId: serverClientId,
+        clientSecret: clientSecret,
+        scopes: scopes,
+      );
+      if (provider == null) {
+        debugPrint('Google Drive: connectToGoogleDrive returned null during validation');
+        return null;
+      }
+
+      // 步骤3: 通过实际 API 调用验证凭据有效性
+      final valid = await provider.validateCredentials();
+      if (valid) return provider;
+
+      debugPrint('Google Drive: credentials validation failed (token may be expired or revoked)');
+      return null;
+    } catch (e) {
+      debugPrint('Google Drive credentials validation failed: $e');
+      return null;
+    }
+  }
+
   static Future<void> signOutGoogleDrive() async {
     if (Platform.isWindows || Platform.isLinux) {
       // 桌面端暂不需要

@@ -35,6 +35,13 @@ abstract class CloudStorageProvider {
   /// Checks if the current user's authentication token is expired.
   Future<bool> tokenExpired();
 
+  /// 验证当前凭据是否仍然有效（通过实际 API 调用检查）
+  /// 返回 true 表示凭据有效，false 表示无效
+  /// 默认实现使用 tokenExpired()，子类可覆盖
+  Future<bool> validateCredentials() async {
+    return !(await tokenExpired());
+  }
+
   /// Logs out the current user from the cloud service.
   Future<bool> logout();
 

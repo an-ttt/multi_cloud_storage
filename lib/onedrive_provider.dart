@@ -244,8 +244,9 @@ class OneDriveProvider extends CloudStorageProvider {
       }
     } else if (isAndroid) {
       // 🎯 Android: 自定义 Scheme 回调
-      // Custom Tabs / Auth Tab 完美支持 WebAuthn/FIDO2，
       // 使用自定义 Scheme 回调通过 CallbackActivity 拦截，比 https 回调更可靠
+      // 注意：MFA 页面自动触发 WebAuthn Conditional UI 可能因 Chrome Android Bug 卡住，
+      // 用户需手动点击验证选项（如"人脸、指纹、PIN或安全密钥"）来触发
       options = FlutterWebAuth2Options(
         // 🎯 preferEphemeral: false → 允许共享浏览器会话，使第三方登录
         //    能识别已登录的账号，避免每次重新输入

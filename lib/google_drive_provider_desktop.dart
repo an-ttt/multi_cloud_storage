@@ -70,11 +70,24 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       if (forceInteractive) {
         credentials = await googleSignIn.signInOnline();
       } else {
-        credentials = await googleSignIn.signIn();
+        // 🎯 非交互模式：仅尝试 lightweightSignIn，不 fallback 到 signInOnline
+        // 避免在凭据验证/恢复场景下意外打开浏览器
+        credentials = await googleSignIn.lightweightSignIn();
       }
 
       if (credentials == null) {
         debugPrint('Google Sign-In returned null — user may have cancelled or token exchange failed (redirectPort: $redirectPort).');
+        return null;
+      }
+
+      // 🎯 预检凭据有效性：如果凭据已过期且没有 refresh_token，
+      // 直接返回 null 而不调用 authenticatedClient，
+      // 避免 authenticatedClient 内部的 signOut() 清除 SharedPreferences 中的凭据
+      final expiresIn = credentials.expiresIn;
+      final hasRefreshToken = credentials.refreshToken != null;
+      if (!hasRefreshToken && expiresIn != null &&
+          expiresIn.isBefore(DateTime.now().add(const Duration(minutes: 1)).toUtc())) {
+        debugPrint('Google Drive credentials expired without refresh token. Returning null to prevent signOut clearing storage.');
         return null;
       }
 
@@ -152,6 +165,20 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   Future<String?> loggedInUserId() async {
     final userInfo = await _fetchUserInfo();
     return userInfo?['sub'] as String?;
+  }
+
+  @override
+  Future<bool> validateCredentials() async {
+    if (!isAuthenticated || _googleSignIn == null) return false;
+    try {
+      // 🎯 通过 _fetchUserInfo() 发起实际 HTTP 请求验证凭据有效性
+      // _fetchUserInfo 内部使用 _googleSignIn.authenticatedClient，会自动刷新 token
+      final userInfo = await _fetchUserInfo();
+      return userInfo != null;
+    } catch (e) {
+      debugPrint('Google Drive Desktop validateCredentials failed: $e');
+      return false;
+    }
   }
 
   @override

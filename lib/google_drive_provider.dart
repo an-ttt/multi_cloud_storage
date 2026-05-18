@@ -47,6 +47,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
     String? clientSecret,
     int redirectPort = 8000,
   }) async {
+    // 🎯 确保 cloudAccess 为 fullAccess，防止全局状态被其他 Provider 重置
+    // 导致 listFiles 使用 appDataFolder 空间查询不到用户文件
+    MultiCloudStorage.cloudAccess = CloudAccessType.fullAccess;
     debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
     // M-07 fix: 未指定 scopes 时动态获取默认值
     if (scopes != null) {
@@ -141,8 +144,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
   Future<List<CloudFile>> listFiles(
       {String path = '', bool recursive = false}) {
     return _executeRequest(() async {
+      final spaces = MultiCloudStorage.cloudAccess == CloudAccessType.appStorage
+          ? 'appDataFolder'
+          : 'drive';
+      debugPrint('GoogleDriveProvider.listFiles: path=$path, recursive=$recursive, spaces=$spaces');
       final folder = await _getFolderByPath(path);
       if (folder == null || folder.id == null) {
+        debugPrint('GoogleDriveProvider.listFiles: folder not found for path=$path');
         return [];
       }
       final List<CloudFile> cloudFiles = [];
@@ -181,6 +189,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
         }
         pageToken = fileList.nextPageToken;
       } while (pageToken != null);
+      debugPrint('GoogleDriveProvider.listFiles: found ${cloudFiles.length} files in path=$path');
       if (recursive) {
         final List<CloudFile> subFolderFiles = [];
         for (final cf in cloudFiles) {
@@ -347,6 +356,22 @@ class GoogleDriveProvider extends CloudStorageProvider {
     })
         .then((_) => false)
         .catchError((_) => true);
+  }
+
+  @override
+  Future<bool> validateCredentials() async {
+    if (!isAuthenticated || _currentAccount == null) return false;
+    try {
+      // 🎯 通过 driveApi.about.get() 发起实际 API 请求验证凭据有效性
+      // _executeRequest 内部会先 _refreshAuthClient()（重新 authorizeScopes 获取最新 token）
+      await _executeRequest(() async {
+        await driveApi.about.get($fields: 'user');
+      });
+      return true;
+    } catch (e) {
+      debugPrint('Google Drive validateCredentials failed: $e');
+      return false;
+    }
   }
 
   @override
