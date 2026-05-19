@@ -523,7 +523,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
     // 🎯 优化：每次 API 请求前刷新授权，通过 authorizeScopes() 获取最新令牌
     // 而非依赖持久化的 AuthClient 中的过期 token
     if (authRetryCount == 0) {
-      await _refreshAuthClient();
+      await refreshAuthClient();
     }
     try {
       return await request();
@@ -556,7 +556,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   // 🎯 通过 authorizeScopes() 获取最新令牌并重建 AuthClient，而非依赖持久化 token
-  Future<void> _refreshAuthClient() async {
+  // 非私有方法，允许桌面端子类重写以使用 silentSignIn() 刷新凭据
+  Future<void> refreshAuthClient() async {
     if (_currentAccount == null) return;
     try {
       final newAuthorization = await _currentAccount!.authorizationClient

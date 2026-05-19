@@ -325,6 +325,32 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     return false;
   }
 
+  // 🎯 桌面端重写：使用 _googleSignIn.silentSignIn() 刷新凭据并重建 driveApi
+  // 父类 refreshAuthClient 使用 _currentAccount（移动端专用），桌面端 _currentAccount 为 null 导致方法空返回
+  @override
+  Future<void> refreshAuthClient() async {
+    if (_googleSignIn == null) return;
+    try {
+      final credentials = await _googleSignIn!.silentSignIn();
+      if (credentials != null) {
+        _accessToken = credentials.accessToken;
+        final client = await _googleSignIn!.authenticatedClient;
+        if (client != null) {
+          final retryClient = RetryClient(
+            client,
+            retries: 3,
+            when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+            onRetry: (request, response, retryCount) => debugPrint(
+                'Retrying request to ${request.url} (Retry #$retryCount)'),
+          );
+          driveApi = drive.DriveApi(retryClient);
+        }
+      }
+    } catch (e) {
+      debugPrint('Google Drive Desktop _refreshAuthClient failed: $e');
+    }
+  }
+
   // Google Drive uses SDK-managed tokens, no storage migration needed
   @override
   Future<void> saveToStorage(String storageKeyPrefix) async {}
