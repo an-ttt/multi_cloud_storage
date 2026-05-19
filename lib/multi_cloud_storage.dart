@@ -17,14 +17,12 @@ class MultiCloudStorage {
 
   static Future<CloudStorageProvider?> connectToDropbox(
           {required String appKey,
-          required String appSecret,
           required String redirectUri,
           bool forceInteractive = false,
           String? storageKeyPrefix,
           String sharedPreferencesName = 'musicgather_secure_storage'}) =>
       DropboxProvider.connect(
           appKey: appKey,
-          appSecret: appSecret,
           redirectUri: redirectUri,
           forceInteractive: forceInteractive,
           storageKeyPrefix: storageKeyPrefix,
@@ -151,7 +149,6 @@ class MultiCloudStorage {
 
   static Future<CloudStorageProvider?> connectToDropboxWithToken({
     required String appKey,
-    required String appSecret,
     required String redirectUri,
     required String accessToken,
     String? refreshToken,
@@ -161,7 +158,6 @@ class MultiCloudStorage {
   }) =>
       DropboxProvider.connectWithToken(
           appKey: appKey,
-          appSecret: appSecret,
           redirectUri: redirectUri,
           accessToken: accessToken,
           refreshToken: refreshToken,
@@ -191,7 +187,6 @@ class MultiCloudStorage {
     required CloudStorageType type,
     required String storageKeyPrefix,
     String? appKey,
-    String? appSecret,
     String? redirectUri,
     String? clientId,
     String? clientSecret,
@@ -199,10 +194,9 @@ class MultiCloudStorage {
   }) async {
     switch (type) {
       case CloudStorageType.dropbox:
-        if (appKey == null || appSecret == null || redirectUri == null) return null;
+        if (appKey == null || redirectUri == null) return null;
         return DropboxProvider.loadFromStorage(
           appKey: appKey,
-          appSecret: appSecret,
           redirectUri: redirectUri,
           storageKeyPrefix: storageKeyPrefix,
           sharedPreferencesName: sharedPreferencesName,

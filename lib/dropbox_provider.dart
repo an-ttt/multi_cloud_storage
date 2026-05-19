@@ -17,7 +17,6 @@ import 'exceptions/not_found_exception.dart';
 class DropboxProvider extends CloudStorageProvider {
   // --- Configuration Properties ---
   final String _appKey;
-  final String _appSecret;
   final String _redirectUri;
 
   // --- Token storage ---
@@ -48,11 +47,9 @@ class DropboxProvider extends CloudStorageProvider {
   /// Private constructor used by the static `connect` method.
   DropboxProvider._create({
     required String appKey,
-    required String appSecret,
     required String redirectUri,
     String sharedPreferencesName = 'musicgather_secure_storage',
   })  : _appKey = appKey,
-        _appSecret = appSecret,
         _redirectUri = redirectUri {
     _secureStorage = FlutterSecureStorage(
       aOptions: AndroidOptions(
@@ -70,7 +67,6 @@ class DropboxProvider extends CloudStorageProvider {
   /// Handles both silent sign-in and interactive user login.
   static Future<DropboxProvider?> connect({
     required String appKey,
-    required String appSecret,
     required String redirectUri,
     bool forceInteractive = false,
     String? storageKeyPrefix,
@@ -84,7 +80,7 @@ class DropboxProvider extends CloudStorageProvider {
     }
     try {
       final provider = DropboxProvider._create(
-          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri,
+          appKey: appKey, redirectUri: redirectUri,
           sharedPreferencesName: sharedPreferencesName);
       provider._storageKeyPrefix = storageKeyPrefix;
       // If interactive login is forced, clear any existing credentials.
@@ -139,7 +135,6 @@ class DropboxProvider extends CloudStorageProvider {
 
   static Future<DropboxProvider?> connectWithToken({
     required String appKey,
-    required String appSecret,
     required String redirectUri,
     required String accessToken,
     String? refreshToken,
@@ -154,7 +149,7 @@ class DropboxProvider extends CloudStorageProvider {
     }
     try {
       final provider = DropboxProvider._create(
-          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri,
+          appKey: appKey, redirectUri: redirectUri,
           sharedPreferencesName: sharedPreferencesName);
       provider._storageKeyPrefix = storageKeyPrefix;
       provider._token = DropboxToken(
@@ -182,14 +177,13 @@ class DropboxProvider extends CloudStorageProvider {
 
   static Future<DropboxProvider?> loadFromStorage({
     required String appKey,
-    required String appSecret,
     required String redirectUri,
     required String storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
   }) async {
     try {
       final provider = DropboxProvider._create(
-          appKey: appKey, appSecret: appSecret, redirectUri: redirectUri,
+          appKey: appKey, redirectUri: redirectUri,
           sharedPreferencesName: sharedPreferencesName);
       provider._storageKeyPrefix = storageKeyPrefix;
       final token = await provider._getToken();
@@ -690,9 +684,6 @@ class DropboxProvider extends CloudStorageProvider {
       'refresh_token': _token!.refreshToken,
       'client_id': _appKey,
     };
-    if (_appSecret.isNotEmpty) {
-      body['client_secret'] = _appSecret;
-    }
     final response = await dioForToken.post(
       'https://api.dropboxapi.com/oauth2/token',
       data: body,
@@ -814,7 +805,6 @@ class DropboxProvider extends CloudStorageProvider {
         'grant_type': 'authorization_code',
         'code': code,
         'client_id': _appKey,
-        if (_appSecret.isNotEmpty) 'client_secret': _appSecret,
         'redirect_uri': _effectiveRedirectUri,
         'code_verifier': _pkceCodeVerifier,
       },
