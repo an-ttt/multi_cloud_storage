@@ -300,7 +300,7 @@ class DropboxProvider extends CloudStorageProvider {
         'https://content.dropboxapi.com/2/files/download',
         options: Options(
           headers: {
-            'Dropbox-API-Arg': jsonEncode({'path': normalizedPath})
+            'Dropbox-API-Arg': _encodeDropboxApiArg(jsonEncode({'path': normalizedPath}))
           },
           responseType: ResponseType.stream, // Download as a stream.
         ),
@@ -331,11 +331,11 @@ class DropboxProvider extends CloudStorageProvider {
         options: Options(
           headers: {
             // Dropbox API arguments are passed in a JSON header.
-            'Dropbox-API-Arg': jsonEncode({
+            'Dropbox-API-Arg': _encodeDropboxApiArg(jsonEncode({
               'path': normalizedPath,
               'mode': 'overwrite',
               'autorename': false,
-            }),
+            })),
             'Content-Type': 'application/octet-stream',
             'Content-Length': fileSize,
           },
@@ -432,7 +432,7 @@ class DropboxProvider extends CloudStorageProvider {
         'https://content.dropboxapi.com/2/files/download',
         options: Options(
           headers: {
-            'Dropbox-API-Arg': jsonEncode({'path': normalizedPath}),
+            'Dropbox-API-Arg': _encodeDropboxApiArg(jsonEncode({'path': normalizedPath})),
             'Range': 'bytes=$offset-${offset + length - 1}',
           },
           responseType: ResponseType.bytes,
@@ -893,6 +893,16 @@ class DropboxProvider extends CloudStorageProvider {
       return path;
     }
     return p.url.normalize(path.startsWith('/') ? path : '/$path');
+  }
+
+  // 🎯 Dropbox-API-Arg 头包含非 ASCII 字符时，必须使用 RFC 2047 编码
+  // 否则 Dart HTTP 客户端会抛出 FormatException: Invalid HTTP header field value
+  String _encodeDropboxApiArg(String jsonArg) {
+    if (jsonArg.codeUnits.any((unit) => unit > 127)) {
+      final encoded = base64Encode(utf8.encode(jsonArg));
+      return '=?utf-8?B?$encoded?=';
+    }
+    return jsonArg;
   }
 
   /// Maps a Dropbox API file/folder entry to a generic [CloudFile].
