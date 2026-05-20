@@ -32,6 +32,11 @@ class DropboxProvider extends CloudStorageProvider {
 
   bool _isAuthenticated = false;
 
+  // DIO 超时配置
+  final Duration _connectTimeout;
+  final Duration _sendTimeout;
+  final Duration _receiveTimeout;
+
   // 🎯 桌面端（Windows/Linux）使用 http://localhost 作为 redirect URI
   // 原因：flutter_web_auth_2 在桌面端默认使用 WebView（useWebview: true），
   // WebView 只能拦截 http/https 导航，自定义 scheme（如 musicgather://）无法被拦截。
@@ -49,8 +54,14 @@ class DropboxProvider extends CloudStorageProvider {
     required String appKey,
     required String redirectUri,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 30),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   })  : _appKey = appKey,
-        _redirectUri = redirectUri {
+        _redirectUri = redirectUri,
+        _connectTimeout = connectTimeout,
+        _sendTimeout = sendTimeout,
+        _receiveTimeout = receiveTimeout {
     _secureStorage = FlutterSecureStorage(
       aOptions: AndroidOptions(
         encryptedSharedPreferences: false,
@@ -71,6 +82,9 @@ class DropboxProvider extends CloudStorageProvider {
     bool forceInteractive = false,
     String? storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 30),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) async {
     debugPrint('connect Dropbox, forceInteractive: $forceInteractive');
     if (appKey.isEmpty || redirectUri.isEmpty) {
@@ -81,7 +95,10 @@ class DropboxProvider extends CloudStorageProvider {
     try {
       final provider = DropboxProvider._create(
           appKey: appKey, redirectUri: redirectUri,
-          sharedPreferencesName: sharedPreferencesName);
+          sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: connectTimeout,
+          sendTimeout: sendTimeout,
+          receiveTimeout: receiveTimeout);
       provider._storageKeyPrefix = storageKeyPrefix;
       // If interactive login is forced, clear any existing credentials.
       if (forceInteractive) {
@@ -141,6 +158,9 @@ class DropboxProvider extends CloudStorageProvider {
     int? expiresIn,
     String? storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 30),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) async {
     if (appKey.isEmpty || redirectUri.isEmpty) {
       debugPrint(
@@ -150,7 +170,10 @@ class DropboxProvider extends CloudStorageProvider {
     try {
       final provider = DropboxProvider._create(
           appKey: appKey, redirectUri: redirectUri,
-          sharedPreferencesName: sharedPreferencesName);
+          sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: connectTimeout,
+          sendTimeout: sendTimeout,
+          receiveTimeout: receiveTimeout);
       provider._storageKeyPrefix = storageKeyPrefix;
       provider._token = DropboxToken(
         accessToken: accessToken,
@@ -180,11 +203,17 @@ class DropboxProvider extends CloudStorageProvider {
     required String redirectUri,
     required String storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 30),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) async {
     try {
       final provider = DropboxProvider._create(
           appKey: appKey, redirectUri: redirectUri,
-          sharedPreferencesName: sharedPreferencesName);
+          sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: connectTimeout,
+          sendTimeout: sendTimeout,
+          receiveTimeout: receiveTimeout);
       provider._storageKeyPrefix = storageKeyPrefix;
       final token = await provider._getToken();
       if (token == null) return null;
@@ -612,9 +641,9 @@ class DropboxProvider extends CloudStorageProvider {
   /// Initializes the Dio HTTP client with interceptors for auth and token refresh.
   void _initializeDio() {
     _dio = Dio(BaseOptions(
-        connectTimeout: const Duration(seconds: 30),
-        sendTimeout: const Duration(seconds: 30),
-        receiveTimeout: const Duration(seconds: 30)));
+        connectTimeout: _connectTimeout,
+        sendTimeout: _sendTimeout,
+        receiveTimeout: _receiveTimeout));
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
         if (_token != null) {
@@ -675,9 +704,9 @@ class DropboxProvider extends CloudStorageProvider {
     }
     debugPrint('Executing Dropbox token refresh request.');
     final dioForToken = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 30),
-      sendTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 30),
+      connectTimeout: _connectTimeout,
+      sendTimeout: _sendTimeout,
+      receiveTimeout: _receiveTimeout,
     ));
     final body = {
       'grant_type': 'refresh_token',
@@ -795,9 +824,9 @@ class DropboxProvider extends CloudStorageProvider {
     debugPrint('Exchanging authorization code for a token.');
     // 添加超时配置，防止 token 交换请求无限挂起
     final dioForToken = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 30),
-      sendTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 30),
+      connectTimeout: _connectTimeout,
+      sendTimeout: _sendTimeout,
+      receiveTimeout: _receiveTimeout,
     ));
     final response = await dioForToken.post(
       'https://api.dropboxapi.com/oauth2/token',

@@ -26,11 +26,21 @@ class OneDriveProvider extends CloudStorageProvider {
   String? _pkceCodeVerifier;
   String? _state;
 
+  // DIO 超时配置
+  final Duration _connectTimeout;
+  final Duration _sendTimeout;
+  final Duration _receiveTimeout;
+
   OneDriveProvider._({
     required this.clientId,
     required this.redirectUri,
     String sharedPreferencesName = 'musicgather_secure_storage',
-  }) {
+    Duration connectTimeout = const Duration(seconds: 10),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
+  })  : _connectTimeout = connectTimeout,
+        _sendTimeout = sendTimeout,
+        _receiveTimeout = receiveTimeout {
     _secureStorage = FlutterSecureStorage(
       aOptions: AndroidOptions(
         encryptedSharedPreferences: false,
@@ -49,6 +59,9 @@ class OneDriveProvider extends CloudStorageProvider {
     String? scopes,
     String? storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 10),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) async {
     if (clientId.trim().isEmpty) {
       throw ArgumentError(
@@ -62,6 +75,9 @@ class OneDriveProvider extends CloudStorageProvider {
         clientId: clientId,
         redirectUri: redirectUri,
         sharedPreferencesName: sharedPreferencesName,
+        connectTimeout: connectTimeout,
+        sendTimeout: sendTimeout,
+        receiveTimeout: receiveTimeout,
       );
       provider._storageKeyPrefix = storageKeyPrefix;
       final effectiveScopes = scopes ??
@@ -86,6 +102,9 @@ class OneDriveProvider extends CloudStorageProvider {
     int? expiresIn,
     String? storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 10),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) async {
     if (clientId.trim().isEmpty) {
       throw ArgumentError(
@@ -99,6 +118,9 @@ class OneDriveProvider extends CloudStorageProvider {
         clientId: clientId,
         redirectUri: redirectUri,
         sharedPreferencesName: sharedPreferencesName,
+        connectTimeout: connectTimeout,
+        sendTimeout: sendTimeout,
+        receiveTimeout: receiveTimeout,
       );
       provider._storageKeyPrefix = storageKeyPrefix;
       provider._accessToken = accessToken;
@@ -121,12 +143,18 @@ class OneDriveProvider extends CloudStorageProvider {
     required String redirectUri,
     required String storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 10),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) async {
     try {
       final provider = OneDriveProvider._(
         clientId: clientId,
         redirectUri: redirectUri,
         sharedPreferencesName: sharedPreferencesName,
+        connectTimeout: connectTimeout,
+        sendTimeout: sendTimeout,
+        receiveTimeout: receiveTimeout,
       );
       provider._storageKeyPrefix = storageKeyPrefix;
       final accessTokenKey = '${storageKeyPrefix}access_token';
@@ -299,9 +327,9 @@ class OneDriveProvider extends CloudStorageProvider {
   // M-21 fix: 使用 Dio 替代 http 包，统一超时配置
   Future<void> _exchangeCodeForToken(String code, String scopes, [String? effectiveRedirectUri]) async {
     final dioForToken = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 10),
-      sendTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 30),
+      connectTimeout: _connectTimeout,
+      sendTimeout: _sendTimeout,
+      receiveTimeout: _receiveTimeout,
     ));
     final data = {
       'client_id': clientId,
@@ -334,9 +362,9 @@ class OneDriveProvider extends CloudStorageProvider {
       throw Exception('No refresh token available');
     }
     final dioForToken = Dio(BaseOptions(
-      connectTimeout: const Duration(seconds: 10),
-      sendTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 30),
+      connectTimeout: _connectTimeout,
+      sendTimeout: _sendTimeout,
+      receiveTimeout: _receiveTimeout,
     ));
     final response = await dioForToken.post(
       'https://login.microsoftonline.com/common/oauth2/v2.0/token',
@@ -359,8 +387,9 @@ class OneDriveProvider extends CloudStorageProvider {
 
   void _initializeDio() {
     _dio = Dio(BaseOptions(
-      sendTimeout: const Duration(seconds: 30),
-      receiveTimeout: const Duration(seconds: 30),
+      connectTimeout: _connectTimeout,
+      sendTimeout: _sendTimeout,
+      receiveTimeout: _receiveTimeout,
     ));
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {

@@ -27,12 +27,13 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
 
   static Future<GoogleDriveProvider?> connect({
     bool forceInteractive = false,
+    bool silentOnly = false,
     List<String>? scopes,
     String? serverClientId,
     String? clientSecret,
     int redirectPort = 0,
   }) async {
-    debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
+    debugPrint("connect Google Drive, forceInteractive: $forceInteractive, silentOnly: $silentOnly");
     if (scopes != null) {
       GoogleDriveProvider.scopes = scopes;
     }
@@ -67,10 +68,10 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       }
 
       all_platforms.GoogleSignInCredentials? credentials;
-      if (forceInteractive) {
+      if (forceInteractive && !silentOnly) {
         credentials = await googleSignIn.signInOnline();
       } else {
-        // 🎯 非交互模式：仅尝试 lightweightSignIn，不 fallback 到 signInOnline
+        // 🎯 非交互模式或 silentOnly 模式：仅尝试 lightweightSignIn，不 fallback 到 signInOnline
         // 避免在凭据验证/恢复场景下意外打开浏览器
         credentials = await googleSignIn.lightweightSignIn();
       }
@@ -358,12 +359,14 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
 
 Future<GoogleDriveProvider?> connectToGoogleDrive(
         {bool forceInteractive = false,
+        bool silentOnly = false,
         List<String>? scopes,
         String? serverClientId,
         String? clientSecret,
         int redirectPort = 0}) =>
     GoogleDriveProviderDesktop.connect(
         forceInteractive: forceInteractive,
+        silentOnly: silentOnly,
         scopes: scopes,
         serverClientId: serverClientId,
         clientSecret: clientSecret,

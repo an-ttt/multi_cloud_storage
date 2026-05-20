@@ -42,15 +42,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   static Future<GoogleDriveProvider?> connect({
     bool forceInteractive = false,
+    bool silentOnly = false,
     List<String>? scopes,
     String? serverClientId,
     String? clientSecret,
     int redirectPort = 8000,
   }) async {
-    // 🎯 确保 cloudAccess 为 fullAccess，防止全局状态被其他 Provider 重置
-    // 导致 listFiles 使用 appDataFolder 空间查询不到用户文件
-    MultiCloudStorage.cloudAccess = CloudAccessType.fullAccess;
-    debugPrint("connect Google Drive,  forceInteractive: $forceInteractive");
+    debugPrint("connect Google Drive, forceInteractive: $forceInteractive, silentOnly: $silentOnly");
     // M-07 fix: 未指定 scopes 时动态获取默认值
     if (scopes != null) {
       GoogleDriveProvider.scopes = scopes;
@@ -78,6 +76,24 @@ class GoogleDriveProvider extends CloudStorageProvider {
         account = await lightweightResult;
       }
       if (account == null) {
+        // 🎯 silentOnly 模式：attemptLightweightAuthentication 失败后延迟重试一次
+        // 应对安卓端 Google Play Services 初始化时序问题（应用重启后首次调用可能返回 null）
+        if (silentOnly) {
+          debugPrint('Google Drive: silentOnly mode, retrying attemptLightweightAuthentication after delay');
+          await Future.delayed(const Duration(milliseconds: 500));
+          final retryResult =
+              GoogleSignIn.instance.attemptLightweightAuthentication();
+          if (retryResult != null) {
+            account = await retryResult;
+          }
+        }
+      }
+      if (account == null) {
+        if (silentOnly) {
+          // 🎯 silentOnly 模式：不调用 authenticate()（避免弹出 UI），直接返回 null
+          debugPrint('Google Drive: silentOnly mode, skipping authenticate()');
+          return null;
+        }
         try {
           account = await GoogleSignIn.instance
               .authenticate(scopeHint: GoogleDriveProvider.scopes);
@@ -821,12 +837,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
 Future<GoogleDriveProvider?> connectToGoogleDrive(
     {bool forceInteractive = false,
+      bool silentOnly = false,
       List<String>? scopes,
       String? serverClientId,
       String? clientSecret,
       int redirectPort = 8000}) =>
     GoogleDriveProvider.connect(
         forceInteractive: forceInteractive,
+        silentOnly: silentOnly,
         scopes: scopes,
         serverClientId: serverClientId,
         clientSecret: clientSecret,

@@ -13,23 +13,30 @@ enum CloudStorageType { dropbox, oneDrive, googleDrive, icloud }
 
 class MultiCloudStorage {
   // M-01 fix: cloudAccess 使用公开字段，Google Drive Provider 在 connect 时动态读取最新值
-  static CloudAccessType cloudAccess = CloudAccessType.appStorage;
+  static CloudAccessType cloudAccess = CloudAccessType.fullAccess;
 
   static Future<CloudStorageProvider?> connectToDropbox(
           {required String appKey,
           required String redirectUri,
           bool forceInteractive = false,
           String? storageKeyPrefix,
-          String sharedPreferencesName = 'musicgather_secure_storage'}) =>
+          String sharedPreferencesName = 'musicgather_secure_storage',
+          Duration connectTimeout = const Duration(seconds: 30),
+          Duration sendTimeout = const Duration(seconds: 30),
+          Duration receiveTimeout = const Duration(seconds: 30)}) =>
       DropboxProvider.connect(
           appKey: appKey,
           redirectUri: redirectUri,
           forceInteractive: forceInteractive,
           storageKeyPrefix: storageKeyPrefix,
-          sharedPreferencesName: sharedPreferencesName);
+          sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: connectTimeout,
+          sendTimeout: sendTimeout,
+          receiveTimeout: receiveTimeout);
 
   static Future<CloudStorageProvider?> connectToGoogleDrive(
           {bool forceInteractive = false,
+          bool silentOnly = false,
           List<String>? scopes,
           String? serverClientId,
             String? clientSecret,
@@ -37,6 +44,7 @@ class MultiCloudStorage {
       if (Platform.isWindows || Platform.isLinux) {
         return GoogleDriveProviderDesktop.connect(
               forceInteractive: forceInteractive,
+              silentOnly: silentOnly,
               scopes: scopes,
               serverClientId: serverClientId,
               clientSecret: clientSecret,
@@ -44,6 +52,7 @@ class MultiCloudStorage {
       } else {
         return GoogleDriveProvider.connect(
             forceInteractive: forceInteractive,
+            silentOnly: silentOnly,
             scopes: scopes,
             serverClientId: serverClientId,
             clientSecret: clientSecret,
@@ -52,38 +61,34 @@ class MultiCloudStorage {
   }
 
   // 🎯 Google Drive SDK 静态登出：清理 SDK 缓存的登录状态
-  /// Google Drive 凭据验证：检查缓存凭据是否存在且有效
-  /// 先检查本地是否有缓存凭据（避免无凭据时触发浏览器/弹出 UI），
-  /// 再创建 provider 并通过实际 API 调用验证凭据有效性
+  /// Google Drive 凭据验证：使用 connectToGoogleDrive(silentOnly: true) 恢复凭据
+  /// silentOnly 模式下：先尝试 attemptLightweightAuthentication()（含重试），
+  /// 失败则返回 null 而非弹出 authenticate() UI
+  ///
+  /// 移除了原有的 verifySilentLogin() 预检查，因为：
+  /// 1. connect() 内部已包含 attemptLightweightAuthentication() 调用，预检查冗余
+  /// 2. 预检查失败后直接放弃，导致安卓端重启后无法恢复（attemptLightweightAuthentication
+  ///    在应用进程重启后可能返回 null，但 connect() 内部的重试逻辑可能成功）
+  /// 3. 预检查和 connect() 分别调用 attemptLightweightAuthentication()，
+  ///    两次调用之间可能存在时序差异导致结果不同
   static Future<CloudStorageProvider?> validateGoogleDriveCredentials({
     String? serverClientId,
     String? clientSecret,
     List<String>? scopes,
   }) async {
-    // 步骤1: 先检查本地是否有缓存凭据
-    final silentOk = await verifyGoogleDriveSilentLogin(
-      serverClientId: serverClientId,
-      clientSecret: clientSecret,
-    );
-    if (!silentOk) {
-      debugPrint('Google Drive: no cached credentials found during validation');
-      return null;
-    }
-
     try {
-      // 步骤2: 使用缓存凭据创建 provider（非交互模式）
       cloudAccess = CloudAccessType.fullAccess;
       final provider = await connectToGoogleDrive(
         serverClientId: serverClientId,
         clientSecret: clientSecret,
         scopes: scopes,
+        silentOnly: true,
       );
       if (provider == null) {
-        debugPrint('Google Drive: connectToGoogleDrive returned null during validation');
+        debugPrint('Google Drive: connectToGoogleDrive(silentOnly: true) returned null during validation');
         return null;
       }
 
-      // 步骤3: 通过实际 API 调用验证凭据有效性
       final valid = await provider.validateCredentials();
       if (valid) return provider;
 
@@ -139,13 +144,19 @@ class MultiCloudStorage {
     String? scopes,
     String? storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 10),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) =>
       OneDriveProvider.connect(
           clientId: clientId,
           redirectUri: redirectUri,
           scopes: scopes,
           storageKeyPrefix: storageKeyPrefix,
-          sharedPreferencesName: sharedPreferencesName);
+          sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: connectTimeout,
+          sendTimeout: sendTimeout,
+          receiveTimeout: receiveTimeout);
 
   static Future<CloudStorageProvider?> connectToDropboxWithToken({
     required String appKey,
@@ -155,6 +166,9 @@ class MultiCloudStorage {
     int? expiresIn,
     String? storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 30),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) =>
       DropboxProvider.connectWithToken(
           appKey: appKey,
@@ -163,7 +177,10 @@ class MultiCloudStorage {
           refreshToken: refreshToken,
           expiresIn: expiresIn,
           storageKeyPrefix: storageKeyPrefix,
-          sharedPreferencesName: sharedPreferencesName);
+          sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: connectTimeout,
+          sendTimeout: sendTimeout,
+          receiveTimeout: receiveTimeout);
 
   static Future<CloudStorageProvider?> connectToOneDriveWithToken({
     required String clientId,
@@ -173,6 +190,9 @@ class MultiCloudStorage {
     int? expiresIn,
     String? storageKeyPrefix,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration connectTimeout = const Duration(seconds: 10),
+    Duration sendTimeout = const Duration(seconds: 30),
+    Duration receiveTimeout = const Duration(seconds: 30),
   }) =>
       OneDriveProvider.connectWithToken(
           clientId: clientId,
@@ -181,7 +201,10 @@ class MultiCloudStorage {
           refreshToken: refreshToken,
           expiresIn: expiresIn,
           storageKeyPrefix: storageKeyPrefix,
-          sharedPreferencesName: sharedPreferencesName);
+          sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: connectTimeout,
+          sendTimeout: sendTimeout,
+          receiveTimeout: receiveTimeout);
 
   static Future<CloudStorageProvider?> loadFromStorage({
     required CloudStorageType type,
@@ -191,6 +214,12 @@ class MultiCloudStorage {
     String? clientId,
     String? clientSecret,
     String sharedPreferencesName = 'musicgather_secure_storage',
+    Duration dropboxConnectTimeout = const Duration(seconds: 30),
+    Duration dropboxSendTimeout = const Duration(seconds: 30),
+    Duration dropboxReceiveTimeout = const Duration(seconds: 30),
+    Duration onedriveConnectTimeout = const Duration(seconds: 10),
+    Duration onedriveSendTimeout = const Duration(seconds: 30),
+    Duration onedriveReceiveTimeout = const Duration(seconds: 30),
   }) async {
     switch (type) {
       case CloudStorageType.dropbox:
@@ -200,6 +229,9 @@ class MultiCloudStorage {
           redirectUri: redirectUri,
           storageKeyPrefix: storageKeyPrefix,
           sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: dropboxConnectTimeout,
+          sendTimeout: dropboxSendTimeout,
+          receiveTimeout: dropboxReceiveTimeout,
         );
       case CloudStorageType.oneDrive:
         if (clientId == null || redirectUri == null) return null;
@@ -208,6 +240,9 @@ class MultiCloudStorage {
           redirectUri: redirectUri,
           storageKeyPrefix: storageKeyPrefix,
           sharedPreferencesName: sharedPreferencesName,
+          connectTimeout: onedriveConnectTimeout,
+          sendTimeout: onedriveSendTimeout,
+          receiveTimeout: onedriveReceiveTimeout,
         );
       case CloudStorageType.googleDrive:
         // M-02 fix: Google Drive 依赖 SDK 静默登录，不支持 loadFromStorage，抛出 UnsupportedError
