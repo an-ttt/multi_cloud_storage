@@ -909,7 +909,7 @@ class DropboxProvider extends CloudStorageProvider {
   CloudFile _mapToCloudFile(Map<String, dynamic> data) {
     final isDir = data['.tag'] == 'folder';
     return CloudFile(
-      path: data['path_display'],
+      path: data['id'],  // 🎯 使用 file ID 而非 path_display，与 ID 驱动的设计一致
       name: data['name'],
       size: isDir ? null : data['size'],
       modifiedTime:

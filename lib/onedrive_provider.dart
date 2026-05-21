@@ -487,13 +487,20 @@ class OneDriveProvider extends CloudStorageProvider {
     return _executeRequest(
       () async {
         final effectivePath = path.isEmpty ? '/' : path;
-        final encodedPath = _encodePath(effectivePath);
         // S-07 fix: 添加分页逻辑，跟随 @odata.nextLink 获取所有文件
         final List<CloudFile> cloudFiles = [];
         String? nextLink;
         do {
-          final url = nextLink ??
-              'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
+          final String url;
+          if (nextLink != null) {
+            url = nextLink;
+          } else if (_isItemId(effectivePath)) {
+            // 🎯 使用 item ID 直接访问，避免路径解析
+            url = _buildItemUrl(effectivePath, '/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType');
+          } else {
+            final encodedPath = _encodePath(effectivePath);
+            url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
+          }
           final response = await _dio.get(url);
           final List<dynamic> items = response.data['value'];
           cloudFiles.addAll(items.map((item) => _mapToCloudFile(item)));
@@ -503,7 +510,8 @@ class OneDriveProvider extends CloudStorageProvider {
           final List<CloudFile> subFolderFiles = [];
           for (final cf in cloudFiles) {
             if (cf.isDirectory) {
-              subFolderFiles.addAll(await listFiles(path: cf.path, recursive: true));
+              // 🎯 递归时使用 item ID 而非路径字符串，避免重复解析路径为 ID
+              subFolderFiles.addAll(await listFiles(path: cf.id ?? cf.path, recursive: true));
             }
           }
           cloudFiles.addAll(subFolderFiles);
@@ -516,20 +524,18 @@ class OneDriveProvider extends CloudStorageProvider {
 
   CloudFile _mapToCloudFile(Map<String, dynamic> item) {
     final isDirectory = item['folder'] != null;
-    final rawPath = item['parentReference']?['path'] ?? '';
     final name = item['name'] as String;
-    // 剥离 OneDrive parentReference.path 中的 /drive/root: 或 /drives/{id}/root: 前缀
-    final relativePath = rawPath.replaceFirst(RegExp(r'^/drive[^/]*/root:'), '');
-    final fullPath = relativePath.isEmpty ? '/$name' : '$relativePath/$name';
+    // 🎯 优先使用 item ID 作为 CloudFile 的 path，与 OneDrive ID 驱动的设计一致
+    final itemId = item['id'] as String?;
     return CloudFile(
-      path: fullPath,
+      path: itemId ?? '',
       name: name,
       size: item['size'] as int?,
       modifiedTime: item['lastModifiedDateTime'] != null
           ? DateTime.tryParse(item['lastModifiedDateTime'])
           : null,
       isDirectory: isDirectory,
-      id: item['id'] as String?,
+      id: itemId,
       mimeType: item['mimeType'] as String?,
     );
   }
@@ -573,11 +579,17 @@ class OneDriveProvider extends CloudStorageProvider {
       () async {
         final file = File(localPath);
         final fileSize = await file.length();
-        final encodedPath = _encodePath(remotePath);
         if (fileSize <= _simpleUploadMaxBytes) {
           // 小文件：简单上传
           final bytes = await file.readAsBytes();
-          final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+          final String url;
+          if (_isItemId(remotePath)) {
+            // 🎯 使用 item ID 直接上传（更新已有文件）
+            url = _buildItemUrl(remotePath, '/content');
+          } else {
+            final encodedPath = _encodePath(remotePath);
+            url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+          }
           await _dio.put(
             url,
             data: bytes,
@@ -590,7 +602,14 @@ class OneDriveProvider extends CloudStorageProvider {
         } else {
           // 大文件：创建上传会话，分块上传
           // 每个 chunk 大小必须是 320 KiB 的倍数（Microsoft Graph API 要求）
-          final createSessionUrl = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createUploadSession';
+          final String createSessionUrl;
+          if (_isItemId(remotePath)) {
+            // 🎯 使用 item ID 创建上传会话（更新已有文件）
+            createSessionUrl = _buildItemUrl(remotePath, '/createUploadSession');
+          } else {
+            final encodedPath = _encodePath(remotePath);
+            createSessionUrl = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createUploadSession';
+          }
           final sessionResponse = await _dio.post(
             createSessionUrl,
             data: {'item': {'@microsoft.graph.conflictBehavior': 'replace'}},
@@ -688,6 +707,9 @@ class OneDriveProvider extends CloudStorageProvider {
         String url;
         if (parentPath.isEmpty) {
           url = 'https://graph.microsoft.com/v1.0/me/drive/root/children';
+        } else if (_isItemId(parentPath)) {
+          // 🎯 父路径是 item ID，使用 ID-based URL
+          url = _buildItemUrl(parentPath, '/children');
         } else {
           final encodedParentPath = _encodePath(parentPath);
           url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedParentPath/children';
@@ -912,8 +934,14 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<Uri?> generateShareLink(String path) {
     return _executeRequest(
       () async {
-        final encodedPath = Uri.encodeComponent(path.startsWith('/') ? path.substring(1) : path);
-        final url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createLink';
+        final String url;
+        if (_isItemId(path)) {
+          // 🎯 使用 item ID 直接创建共享链接
+          url = _buildItemUrl(path, '/createLink');
+        } else {
+          final encodedPath = Uri.encodeComponent(path.startsWith('/') ? path.substring(1) : path);
+          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createLink';
+        }
         final response = await _dio.post(
           url,
           data: {"type": "edit", "scope": "anonymous"},
