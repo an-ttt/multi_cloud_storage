@@ -23,6 +23,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   GoogleSignInAccount? _currentAccount;
   GoogleSignInClientAuthorization? _currentAuthorization;
   AuthClient? _authClient;
+  // 🎯 认证失败标记：authorizeScopes() 失败后设为 true，不再尝试 authorizeScopes()
+  // 避免 Android 端反复弹出自动登录 UI，直到用户手动重新登录（connect()）后重置
+  bool _authFailed = false;
   static bool _initialized = false;
   static String? _initializedServerClientId;
   static List<String> scopes = [
@@ -166,6 +169,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
       provider._authClient = client;
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
+      provider._authFailed = false; // 🎯 新连接成功，清除认证失败标记
       debugPrint(
           'Google Drive user signed in: ID=${account.id}, Email=${account.email}');
       return provider;
@@ -581,6 +585,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
   // 非私有方法，允许桌面端子类重写以使用 silentSignIn() 刷新凭据
   Future<void> refreshAuthClient() async {
     if (_currentAccount == null) return;
+    // 🎯 认证已失败，不再尝试 authorizeScopes()，避免弹出登录 UI
+    if (_authFailed) {
+      isAuthenticated = false;
+      return;
+    }
     try {
       final newAuthorization = await _currentAccount!.authorizationClient
           .authorizeScopes(GoogleDriveProvider.scopes);
@@ -598,6 +607,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
       driveApi = drive.DriveApi(retryClient);
     } catch (e) {
       debugPrint('Google Drive _refreshAuthClient failed: $e');
+      // 🎯 标记认证失败，后续不再尝试 authorizeScopes()
+      _authFailed = true;
+      isAuthenticated = false;
     }
   }
 
@@ -614,6 +626,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
       _authClient?.close();
       _authClient = null;
       _currentAuthorization = null;
+      throw error;
+    }
+    // 🎯 认证已失败，不再尝试 authorizeScopes()，避免弹出登录 UI
+    if (_authFailed) {
+      debugPrint('Google Drive: auth previously failed, skipping authorizeScopes() in auth retry');
       throw error;
     }
     try {
@@ -636,6 +653,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
       return await _executeRequest<T>(request, authRetryCount: authRetryCount + 1);
     } catch (e) {
       debugPrint('Failed to reconnect after auth error: $e');
+      // 🎯 标记认证失败，后续不再尝试 authorizeScopes()
+      _authFailed = true;
     }
     throw error;
   }
@@ -809,6 +828,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
   @override
   Future<bool> refreshAccessToken() async {
     if (_currentAccount != null && _currentAuthorization != null) {
+      // 🎯 认证已失败，不再尝试 authorizeScopes()，避免弹出登录 UI
+      if (_authFailed) {
+        debugPrint('Google Drive: auth previously failed, skipping token refresh');
+        return false;
+      }
       try {
         final newAuthorization = await _currentAccount!.authorizationClient
             .authorizeScopes(GoogleDriveProvider.scopes);
@@ -827,6 +851,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
         return true;
       } catch (e) {
         debugPrint('Google Drive SDK token refresh failed: $e');
+        // 🎯 标记认证失败，后续不再尝试 authorizeScopes()
+        _authFailed = true;
         return false;
       }
     }
