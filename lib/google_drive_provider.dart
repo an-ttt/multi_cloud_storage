@@ -246,9 +246,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
         );
         if (fileList.files != null) {
           for (final file in fileList.files!) {
-            // S-02 fix: 使用 p.url.join 确保始终使用正斜杠，避免 Windows 平台使用反斜杠
-            String currentItemPath = p.url.join(path, file.name ?? '');
-            if (path == '/' || path.isEmpty) currentItemPath = file.name ?? '';
+            // 🎯 优先使用 file ID 作为 CloudFile 的 path，与 Google Drive ID 驱动的设计一致
+            String currentItemPath = file.id ?? p.url.join(path, file.name ?? '');
+            if ((path == '/' || path.isEmpty) && file.id == null) {
+              currentItemPath = file.name ?? '';
+            }
             cloudFiles.add(CloudFile(
               path: currentItemPath,
               name: file.name ?? 'Unnamed',
@@ -273,8 +275,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
         final List<CloudFile> subFolderFiles = [];
         for (final cf in cloudFiles) {
           if (cf.isDirectory) {
+            // 🎯 递归时使用 file ID 而非路径字符串，避免重复解析路径为 ID
             subFolderFiles
-                .addAll(await listFiles(path: cf.path, recursive: true));
+                .addAll(await listFiles(path: cf.id ?? cf.path, recursive: true));
           }
         }
         cloudFiles.addAll(subFolderFiles);
@@ -719,6 +722,18 @@ class GoogleDriveProvider extends CloudStorageProvider {
   Future<drive.File?> _getFolderByPath(String folderPath) async {
     if (folderPath.isEmpty || folderPath == '.' || folderPath == '/') {
       return _getRootFolder();
+    }
+    // 🎯 如果输入是 Google Drive file ID，直接通过 API 获取文件夹对象
+    // 避免将 file ID 当作路径名逐级查找导致找不到
+    if (_isFileId(folderPath)) {
+      try {
+        final file = await driveApi.files.get(folderPath,
+            $fields: 'id, name, size, modifiedTime, mimeType, parents') as drive.File;
+        if (file.id != null) return file;
+      } catch (e) {
+        debugPrint('GoogleDriveProvider: _getFolderByPath direct ID lookup failed for "$folderPath": $e');
+        return null;
+      }
     }
     final parts = p.split(folderPath
         .replaceAll(RegExp(r'^/+'), '')
