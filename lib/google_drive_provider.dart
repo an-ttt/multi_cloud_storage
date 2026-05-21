@@ -28,6 +28,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
   bool _authFailed = false;
   static bool _initialized = false;
   static String? _initializedServerClientId;
+  // 🎯 v7+ 最佳实践：监听 authenticationEvents 流感知 SDK 内部状态变更
+  // 当用户在系统设置中撤销权限、SDK 内部因安全策略自动登出时，
+  // 通过此流自动感知并更新 Provider 的认证状态
+  static StreamSubscription<GoogleSignInAuthenticationEvent>? _authEventsSubscription;
+  // 🎯 SDK 层面的登出事件标记：authenticationEvents 流收到 SignOut 事件时设为 true
+  // 实例在 _checkAuth() 中检查此标记，如果为 true 则标记自身认证失效
+  static bool _sdkSignOutDetected = false;
   static List<String> scopes = [
     drive.DriveApi.driveAppdataScope,
   ];
@@ -63,8 +70,20 @@ class GoogleDriveProvider extends CloudStorageProvider {
         await GoogleSignIn.instance.initialize(serverClientId: serverClientId);
         _initialized = true;
         _initializedServerClientId = serverClientId;
-        // TODO: 未来优化 — 监听 authenticationEvents 流感知 SDK 内部状态变更
-        // GoogleSignIn.instance.authenticationEvents.listen((event) { ... });
+        // 🎯 v7+ 最佳实践：监听 authenticationEvents 流感知 SDK 内部状态变更
+        // 感知场景：用户在 Android 系统设置中撤销应用权限、SDK 内部因安全策略自动登出、
+        // 用户在其他设备上更改密码等。当收到 SignOut 事件时，设置静态标记，
+        // 所有 Provider 实例在 _checkAuth() 中检测到此标记后标记自身认证失效
+        _authEventsSubscription?.cancel();
+        _authEventsSubscription = GoogleSignIn.instance.authenticationEvents.listen((event) {
+          if (event is GoogleSignInAuthenticationEventSignOut) {
+            debugPrint('GoogleDriveProvider: authenticationEvents received SignOut event - setting sdkSignOutDetected flag');
+            _sdkSignOutDetected = true;
+          } else if (event is GoogleSignInAuthenticationEventSignIn) {
+            debugPrint('GoogleDriveProvider: authenticationEvents received SignIn event for ${event.user.email}');
+            _sdkSignOutDetected = false;
+          }
+        });
       } else if (serverClientId != null && serverClientId != _initializedServerClientId) {
         debugPrint(
           'GoogleDriveProvider: GoogleSignIn already initialized with '
@@ -81,15 +100,22 @@ class GoogleDriveProvider extends CloudStorageProvider {
         lightweightAccount = await lightweightResult;
       }
       if (lightweightAccount == null) {
-        // 🎯 silentOnly 模式：attemptLightweightAuthentication 失败后延迟重试一次
+        // 🎯 silentOnly 模式：attemptLightweightAuthentication 失败后指数退避重试
         // 应对安卓端 Google Play Services 初始化时序问题（应用重启后首次调用可能返回 null）
+        // 退避策略：500ms → 1s → 2s，最多 3 次重试
         if (silentOnly) {
-          debugPrint('Google Drive: silentOnly mode, retrying attemptLightweightAuthentication after delay');
-          await Future.delayed(const Duration(milliseconds: 500));
-          final retryResult =
-              GoogleSignIn.instance.attemptLightweightAuthentication();
-          if (retryResult != null) {
-            lightweightAccount = await retryResult;
+          const maxRetries = 3;
+          const initialDelay = Duration(milliseconds: 500);
+          for (var i = 0; i < maxRetries; i++) {
+            final delay = initialDelay * (1 << i);
+            debugPrint('Google Drive: silentOnly mode, retrying attemptLightweightAuthentication after ${delay.inMilliseconds}ms (attempt ${i + 1}/$maxRetries)');
+            await Future.delayed(delay);
+            final retryResult =
+                GoogleSignIn.instance.attemptLightweightAuthentication();
+            if (retryResult != null) {
+              lightweightAccount = await retryResult;
+              if (lightweightAccount != null) break;
+            }
           }
         }
       }
@@ -100,13 +126,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
           return null;
         }
       }
-      // 🎯 forceInteractive 模式：即使 attemptLightweightAuthentication 成功，
-      // 也调用 authenticate(scopeHint:) 以确保弹出授权同意界面，
-      // 让用户明确看到并同意应用请求的权限（Drive 访问、用户信息等）
+      // 🎯 v7+ 优化：attemptLightweightAuthentication() 成功时直接使用返回的 account，
+      // 跳过 authenticate()，避免 Android 上两次 UI 闪烁（轻量级提示 + 完整登录界面）
+      // lightweightAccount 已通过 SDK 验证，后续 authorizeScopes() 会确保 scope 授权
+      // 仅在 lightweightAccount 为 null（无缓存账户）时才调用 authenticate()
       // 前置检查 supportsAuthenticate()：v7+ 推荐先确认平台支持 authenticate()
       // 不支持时（如 Web 端）回退到 lightweightAccount + authorizeScopes()
-      // 非 forceInteractive 模式（静默恢复）：直接使用 lightweightAccount
-      if (forceInteractive && !silentOnly && GoogleSignIn.instance.supportsAuthenticate()) {
+      if (lightweightAccount == null && forceInteractive && !silentOnly && GoogleSignIn.instance.supportsAuthenticate()) {
         try {
           account = await GoogleSignIn.instance
               .authenticate(scopeHint: GoogleDriveProvider.scopes);
@@ -170,6 +196,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
       provider._authFailed = false; // 🎯 新连接成功，清除认证失败标记
+      _sdkSignOutDetected = false; // 🎯 新连接成功，清除 SDK 登出检测标记
       debugPrint(
           'Google Drive user signed in: ID=${account.id}, Email=${account.email}');
       return provider;
@@ -575,10 +602,44 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   void _checkAuth() {
+    // 🎯 v7+ 最佳实践：检查 SDK 层面的登出事件
+    // 如果 authenticationEvents 流收到 SignOut 事件（如用户在系统设置中撤销权限），
+    // 标记当前实例认证失效，后续请求会快速失败，引导用户重新登录
+    if (_sdkSignOutDetected) {
+      isAuthenticated = false;
+      _authFailed = true;
+      _currentAccount = null;
+      _currentAuthorization = null;
+      _authClient?.close();
+      _authClient = null;
+    }
     if (!isAuthenticated) {
       throw Exception(
           'GoogleDriveProvider: Not authenticated. Call connect() first.');
     }
+  }
+
+  // 🎯 通用方法：通过 authorizeScopes() 获取最新授权并重建 DriveApi
+  // 提取自 refreshAuthClient/handleAuthErrorAndRetry/refreshAccessToken 三处重复逻辑
+  // 返回 true 表示重建成功，false 表示失败
+  // 非私有方法，允许桌面端子类重写以使用 silentSignIn() 刷新凭据
+  Future<bool> _rebuildDriveApi() async {
+    if (_currentAccount == null) return false;
+    final newAuthorization = await _currentAccount!.authorizationClient
+        .authorizeScopes(GoogleDriveProvider.scopes);
+    _currentAuthorization = newAuthorization;
+    final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
+    _authClient?.close();
+    _authClient = client;
+    final retryClient = RetryClient(
+      client,
+      retries: 3,
+      when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+      onRetry: (request, response, retryCount) => debugPrint(
+          'Retrying request to ${request.url} (Retry #$retryCount)'),
+    );
+    driveApi = drive.DriveApi(retryClient);
+    return true;
   }
 
   // 🎯 通过 authorizeScopes() 获取最新令牌并重建 AuthClient，而非依赖持久化 token
@@ -591,25 +652,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
       return;
     }
     try {
-      final newAuthorization = await _currentAccount!.authorizationClient
-          .authorizeScopes(GoogleDriveProvider.scopes);
-      _currentAuthorization = newAuthorization;
-      final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
-      _authClient?.close();
-      _authClient = client;
-      final retryClient = RetryClient(
-        client,
-        retries: 3,
-        when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
-        onRetry: (request, response, retryCount) => debugPrint(
-            'Retrying request to ${request.url} (Retry #$retryCount)'),
-      );
-      driveApi = drive.DriveApi(retryClient);
+      await _rebuildDriveApi();
     } catch (e) {
+      // 🎯 刷新失败时标记认证状态为无效，阻止后续请求使用过期凭据
+      // 避免调用方误以为 Token 已更新，后续请求会因 _checkAuth() 失败而快速失败
+      isAuthenticated = false;
       debugPrint('Google Drive _refreshAuthClient failed: $e');
       // 🎯 标记认证失败，后续不再尝试 authorizeScopes()
       _authFailed = true;
-      isAuthenticated = false;
     }
   }
 
@@ -634,20 +684,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
       throw error;
     }
     try {
-      final newAuthorization = await _currentAccount!.authorizationClient
-          .authorizeScopes(GoogleDriveProvider.scopes);
-      _currentAuthorization = newAuthorization;
-      final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
-      _authClient?.close();
-      _authClient = client;
-      final retryClient = RetryClient(
-        client,
-        retries: 3,
-        when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
-        onRetry: (request, response, retryCount) => debugPrint(
-            'Retrying request to ${request.url} (Retry #$retryCount)'),
-      );
-      driveApi = drive.DriveApi(retryClient);
+      await _rebuildDriveApi();
       isAuthenticated = true;
       debugPrint('Successfully reconnected. Retrying the original request.');
       return await _executeRequest<T>(request, authRetryCount: authRetryCount + 1);
@@ -834,21 +871,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
         return false;
       }
       try {
-        final newAuthorization = await _currentAccount!.authorizationClient
-            .authorizeScopes(GoogleDriveProvider.scopes);
-        _currentAuthorization = newAuthorization;
-        final client = newAuthorization.authClient(scopes: GoogleDriveProvider.scopes);
-        _authClient?.close();
-        _authClient = client;
-        final retryClient = RetryClient(
-          client,
-          retries: 3,
-          when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
-          onRetry: (request, response, retryCount) => debugPrint(
-              'Retrying request to ${request.url} (Retry #$retryCount)'),
-        );
-        driveApi = drive.DriveApi(retryClient);
-        return true;
+        return await _rebuildDriveApi();
       } catch (e) {
         debugPrint('Google Drive SDK token refresh failed: $e');
         // 🎯 标记认证失败，后续不再尝试 authorizeScopes()

@@ -20,6 +20,10 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   // 其 _setParams() 有 assert(_params == null) 断言，第二次创建 GoogleSignIn 时会触发此断言失败。
   // 复用同一实例可避免重复调用 init()，从而绕过该限制。
   static all_platforms.GoogleSignIn? _sharedGoogleSignIn;
+  // 🎯 记录已创建实例的参数，当参数变化时检测并打印警告
+  // 由于平台单例限制无法重新创建实例，但 Google Drive 单账户场景下参数通常不变
+  static String? _sharedClientId;
+  static List<String>? _sharedScopes;
 
   GoogleDriveProviderDesktop.internal() : super.internal();
 
@@ -42,6 +46,14 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       all_platforms.GoogleSignIn googleSignIn;
       if (_sharedGoogleSignIn != null) {
         googleSignIn = _sharedGoogleSignIn!;
+        // 🎯 检测参数变化：如果 clientId 或 scopes 与已创建实例不同，打印警告
+        // 由于平台单例限制无法重新创建实例，但 Google Drive 单账户场景下参数通常不变
+        if (_sharedClientId != serverClientId) {
+          debugPrint('WARNING: GoogleSignIn clientId changed from $_sharedClientId to $serverClientId, but cannot recreate instance due to platform singleton limitation');
+        }
+        if (_sharedScopes != null && !_listEquals(_sharedScopes!, GoogleDriveProvider.scopes)) {
+          debugPrint('WARNING: GoogleSignIn scopes changed from $_sharedScopes to ${GoogleDriveProvider.scopes}, but cannot recreate instance due to platform singleton limitation');
+        }
         debugPrint('Reusing existing GoogleSignIn instance for Google Drive OAuth.');
       } else {
         // 🎯 动态分配端口，避免硬编码 8000 端口冲突
@@ -65,6 +77,8 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
 
         googleSignIn = all_platforms.GoogleSignIn(params: signInParams);
         _sharedGoogleSignIn = googleSignIn;
+        _sharedClientId = serverClientId;
+        _sharedScopes = List.from(GoogleDriveProvider.scopes);
       }
 
       all_platforms.GoogleSignInCredentials? credentials;
@@ -197,6 +211,27 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     }
   }
 
+  // 🎯 桌面端通用方法：通过 silentSignIn() 静默刷新凭据并重建 DriveApi
+  // 提取自 handleAuthErrorAndRetry/refreshAccessToken/refreshAuthClient 三处重复逻辑
+  // 返回 true 表示重建成功，false 表示失败
+  Future<bool> _rebuildDriveApiDesktop() async {
+    if (_googleSignIn == null) return false;
+    final credentials = await _googleSignIn!.silentSignIn();
+    if (credentials == null) return false;
+    _accessToken = credentials.accessToken;
+    final client = await _googleSignIn!.authenticatedClient;
+    if (client == null) return false;
+    final retryClient = RetryClient(
+      client,
+      retries: 3,
+      when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
+      onRetry: (request, response, retryCount) => debugPrint(
+          'Retrying request to ${request.url} (Retry #$retryCount)'),
+    );
+    driveApi = drive.DriveApi(retryClient);
+    return true;
+  }
+
   @override
   Future<T> handleAuthErrorAndRetry<T>(
       Future<T> Function() request, Object error, StackTrace stackTrace, {int authRetryCount = 0}) async {
@@ -207,36 +242,24 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     debugPrint('Authentication error occurred. Attempting to reconnect...');
     isAuthenticated = false;
     try {
-      if (_googleSignIn != null) {
-        final credentials = await _googleSignIn!.signIn();
-        if (credentials != null) {
-          _accessToken = credentials.accessToken;
-          final client = await _googleSignIn!.authenticatedClient;
-          if (client != null) {
-            final retryClient = RetryClient(
-              client,
-              retries: 3,
-              when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
-              onRetry: (request, response, retryCount) => debugPrint(
-                  'Retrying request to ${request.url} (Retry #$retryCount)'),
-            );
-            driveApi = drive.DriveApi(retryClient);
-            isAuthenticated = true;
-            debugPrint('Successfully reconnected. Retrying the original request.');
-            try {
-              return await request();
-            } on drive.DetailedApiRequestError catch (retryError) {
-              if (retryError.status == 401 || retryError.status == 403) {
-                // M-13 fix: 抛出重试时的具体错误，而非原始错误，保留更多调试信息
-                debugPrint('Auth retry limit reached after reconnect. Throwing retry error.');
-                rethrow;
-              }
-              rethrow;
-            } on AccessDeniedException {
-              debugPrint('Auth retry limit reached after reconnect. Throwing retry error.');
-              rethrow;
-            }
+      // 🎯 使用 silentSignIn() 静默刷新凭据，避免在同步/播放过程中意外弹出浏览器
+      // 仅在用户主动触发（如点击"重新登录"按钮）时才使用 signInOnline()
+      final rebuilt = await _rebuildDriveApiDesktop();
+      if (rebuilt) {
+        isAuthenticated = true;
+        debugPrint('Successfully reconnected via silentSignIn. Retrying the original request.');
+        try {
+          return await request();
+        } on drive.DetailedApiRequestError catch (retryError) {
+          if (retryError.status == 401 || retryError.status == 403) {
+            // M-13 fix: 抛出重试时的具体错误，而非原始错误，保留更多调试信息
+            debugPrint('Auth retry limit reached after reconnect. Throwing retry error.');
+            rethrow;
           }
+          rethrow;
+        } on AccessDeniedException {
+          debugPrint('Auth retry limit reached after reconnect. Throwing retry error.');
+          rethrow;
         }
       }
     } catch (e) {
@@ -257,32 +280,14 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
 
   @override
   Future<bool> refreshAccessToken() async {
-    if (_googleSignIn != null) {
-      try {
-        // M-14 fix: 使用 silentSignIn 避免弹出 UI 窗口
-        final credentials = await _googleSignIn!.silentSignIn();
-        if (credentials != null) {
-          _accessToken = credentials.accessToken;
-          final client = await _googleSignIn!.authenticatedClient;
-          if (client != null) {
-            final retryClient = RetryClient(
-              client,
-              retries: 3,
-              when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
-              onRetry: (request, response, retryCount) => debugPrint(
-                  'Retrying request to ${request.url} (Retry #$retryCount)'),
-            );
-            driveApi = drive.DriveApi(retryClient);
-            return true;
-          }
-        }
-        return false;
-      } catch (e) {
-        debugPrint('Google Drive Desktop token refresh failed: $e');
-        return false;
-      }
+    if (_googleSignIn == null) return false;
+    try {
+      // M-14 fix: 使用 silentSignIn 避免弹出 UI 窗口
+      return await _rebuildDriveApiDesktop();
+    } catch (e) {
+      debugPrint('Google Drive Desktop token refresh failed: $e');
+      return false;
     }
-    return false;
   }
 
   // 🎯 桌面端重写：使用 _googleSignIn.silentSignIn() 刷新凭据并重建 driveApi
@@ -291,21 +296,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   Future<void> refreshAuthClient() async {
     if (_googleSignIn == null) return;
     try {
-      final credentials = await _googleSignIn!.silentSignIn();
-      if (credentials != null) {
-        _accessToken = credentials.accessToken;
-        final client = await _googleSignIn!.authenticatedClient;
-        if (client != null) {
-          final retryClient = RetryClient(
-            client,
-            retries: 3,
-            when: (response) => {500, 502, 503, 504}.contains(response.statusCode),
-            onRetry: (request, response, retryCount) => debugPrint(
-                'Retrying request to ${request.url} (Retry #$retryCount)'),
-          );
-          driveApi = drive.DriveApi(retryClient);
-        }
-      }
+      await _rebuildDriveApiDesktop();
     } catch (e) {
       debugPrint('Google Drive Desktop _refreshAuthClient failed: $e');
     }
@@ -330,3 +321,12 @@ Future<GoogleDriveProvider?> connectToGoogleDrive(
         serverClientId: serverClientId,
         clientSecret: clientSecret,
         redirectPort: redirectPort);
+
+// 🎯 比较两个 List<String> 内容是否相同
+bool _listEquals(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
