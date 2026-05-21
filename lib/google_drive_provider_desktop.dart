@@ -110,6 +110,9 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
 
       if (client == null) {
         debugPrint('Failed to get authenticated Google client — token may be invalid or expired.');
+        // 🎯 authenticatedClient 返回 null：凭据已失效，signOut 清除 SDK 缓存
+        // 避免后续 lightweightSignIn() 继续返回过期凭据导致循环重试
+        try { await googleSignIn.signOut(); } catch (_) {}
         throw Exception('Google Drive authentication failed: unable to obtain authenticated client. The access token may be invalid or expired.');
       }
 
@@ -192,15 +195,29 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       // 🎯 通过 _fetchUserInfo() 发起实际 HTTP 请求验证凭据有效性
       // _fetchUserInfo 内部使用 _googleSignIn.authenticatedClient，会自动刷新 token
       final userInfo = await _fetchUserInfo();
-      return userInfo != null;
+      if (userInfo != null) return true;
+      // 🎯 _fetchUserInfo 返回 null：可能是 invalid_grant（refresh token 已失效）
+      // 此时 SDK 缓存的凭据已不可用，必须 signOut 清除缓存，
+      // 否则后续 lightweightSignIn() 会继续返回过期凭据导致循环重试
+      debugPrint('Google Drive Desktop validateCredentials: _fetchUserInfo returned null, signing out to clear stale credentials');
+      await signOut();
+      return false;
     } catch (e) {
       debugPrint('Google Drive Desktop validateCredentials failed: $e');
+      // 🎯 检测 invalid_grant：refresh token 已失效，需清理 SDK 缓存
+      final errorStr = e.toString();
+      if (errorStr.contains('invalid_grant')) {
+        debugPrint('Google Drive Desktop validateCredentials: invalid_grant detected, signing out to clear stale credentials');
+        await signOut();
+      }
       return false;
     }
   }
 
   @override
   Future<void> signOut() async {
+    // 🎯 在清理前检查是否为共享实例，用于后续清理 _sharedGoogleSignIn
+    final wasSharedInstance = identical(_googleSignIn, _sharedGoogleSignIn);
     try {
       await _googleSignIn?.signOut();
     } catch (error) {
@@ -210,6 +227,13 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       _googleSignIn = null;
       _accessToken = null;
       isAuthenticated = false;
+      // 🎯 同时清理静态共享实例，确保下次 connect() 不会复用已失效的实例
+      // 避免 lightweightSignIn() 继续返回过期凭据导致循环重试
+      if (wasSharedInstance) {
+        _sharedGoogleSignIn = null;
+        _sharedClientId = null;
+        _sharedScopes = null;
+      }
       debugPrint('User signed out from Google Drive.');
     }
   }

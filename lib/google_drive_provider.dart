@@ -454,6 +454,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
       return true;
     } catch (e) {
       debugPrint('Google Drive validateCredentials failed: $e');
+      // 🎯 凭据验证失败：可能是 invalid_grant（refresh token 已失效）
+      // signOut 清除 SDK 缓存的过期凭据，避免后续 attemptLightweightAuthentication
+      // 继续返回过期账户导致循环重试
+      final errorStr = e.toString();
+      if (errorStr.contains('invalid_grant') || errorStr.contains('401') || errorStr.contains('403')) {
+        debugPrint('Google Drive validateCredentials: auth error detected, signing out to clear stale credentials');
+        await signOut();
+      }
       return false;
     }
   }
