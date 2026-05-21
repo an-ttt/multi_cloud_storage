@@ -255,47 +255,6 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   @override
   Future<DateTime?> getTokenExpiry() async => null;
 
-  static Future<bool> verifySilentLogin({
-    String? serverClientId,
-    String? clientSecret,
-  }) async {
-    try {
-      all_platforms.GoogleSignIn googleSignIn;
-      if (_sharedGoogleSignIn != null) {
-        googleSignIn = _sharedGoogleSignIn!;
-      } else {
-        if (serverClientId == null) return false;
-        int redirectPort = 0;
-        try {
-          final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-          redirectPort = socket.port;
-          await socket.close();
-        } catch (e) {
-          debugPrint('Failed to allocate dynamic port for Google Drive silent login: $e');
-          redirectPort = 8000;
-        }
-        final signInParams = all_platforms.GoogleSignInParams(
-          clientId: serverClientId,
-          clientSecret: clientSecret,
-          scopes: GoogleDriveProvider.scopes,
-          redirectPort: redirectPort,
-        );
-        googleSignIn = all_platforms.GoogleSignIn(params: signInParams);
-        _sharedGoogleSignIn = googleSignIn;
-      }
-      final credentials = await googleSignIn.silentSignIn();
-      if (credentials != null) {
-        debugPrint('Google Drive Desktop silent login verified');
-        return true;
-      }
-      debugPrint('Google Drive Desktop silent login failed: no cached credentials');
-      return false;
-    } catch (e) {
-      debugPrint('Google Drive Desktop silent login verification failed: $e');
-      return false;
-    }
-  }
-
   @override
   Future<bool> refreshAccessToken() async {
     if (_googleSignIn != null) {
@@ -371,12 +330,3 @@ Future<GoogleDriveProvider?> connectToGoogleDrive(
         serverClientId: serverClientId,
         clientSecret: clientSecret,
         redirectPort: redirectPort);
-
-Future<bool> verifyGoogleDriveSilentLogin({
-  String? serverClientId,
-  String? clientSecret,
-}) =>
-    GoogleDriveProviderDesktop.verifySilentLogin(
-      serverClientId: serverClientId,
-      clientSecret: clientSecret,
-    );

@@ -60,6 +60,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
         await GoogleSignIn.instance.initialize(serverClientId: serverClientId);
         _initialized = true;
         _initializedServerClientId = serverClientId;
+        // TODO: 未来优化 — 监听 authenticationEvents 流感知 SDK 内部状态变更
+        // GoogleSignIn.instance.authenticationEvents.listen((event) { ... });
       } else if (serverClientId != null && serverClientId != _initializedServerClientId) {
         debugPrint(
           'GoogleDriveProvider: GoogleSignIn already initialized with '
@@ -68,14 +70,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
         );
       }
       GoogleSignInAccount? account;
-      // 🎯 优化：永远先调 attemptLightweightAuthentication()，即使 forceInteractive=true
-      // 静默登录成功则避免触发 authenticate() 导致的 "Account reauth failed" 错误
+      GoogleSignInAccount? lightweightAccount;
+      // 🎯 先尝试 attemptLightweightAuthentication() 获取已登录账户
       final lightweightResult =
           GoogleSignIn.instance.attemptLightweightAuthentication();
       if (lightweightResult != null) {
-        account = await lightweightResult;
+        lightweightAccount = await lightweightResult;
       }
-      if (account == null) {
+      if (lightweightAccount == null) {
         // 🎯 silentOnly 模式：attemptLightweightAuthentication 失败后延迟重试一次
         // 应对安卓端 Google Play Services 初始化时序问题（应用重启后首次调用可能返回 null）
         if (silentOnly) {
@@ -84,30 +86,59 @@ class GoogleDriveProvider extends CloudStorageProvider {
           final retryResult =
               GoogleSignIn.instance.attemptLightweightAuthentication();
           if (retryResult != null) {
-            account = await retryResult;
+            lightweightAccount = await retryResult;
           }
         }
       }
-      if (account == null) {
+      if (lightweightAccount == null) {
         if (silentOnly) {
           // 🎯 silentOnly 模式：不调用 authenticate()（避免弹出 UI），直接返回 null
           debugPrint('Google Drive: silentOnly mode, skipping authenticate()');
           return null;
         }
+      }
+      // 🎯 forceInteractive 模式：即使 attemptLightweightAuthentication 成功，
+      // 也调用 authenticate(scopeHint:) 以确保弹出授权同意界面，
+      // 让用户明确看到并同意应用请求的权限（Drive 访问、用户信息等）
+      // 前置检查 supportsAuthenticate()：v7+ 推荐先确认平台支持 authenticate()
+      // 不支持时（如 Web 端）回退到 lightweightAccount + authorizeScopes()
+      // 非 forceInteractive 模式（静默恢复）：直接使用 lightweightAccount
+      if (forceInteractive && !silentOnly && GoogleSignIn.instance.supportsAuthenticate()) {
         try {
           account = await GoogleSignIn.instance
               .authenticate(scopeHint: GoogleDriveProvider.scopes);
         } on GoogleSignInException catch (e) {
-          debugPrint('Google Sign-In error: $e');
+          debugPrint('Google Sign-In authenticate error: $e');
           if (e.code == GoogleSignInExceptionCode.canceled) {
             // 🎯 区分用户主动取消和系统 reauth 失败
             if (e.toString().contains('reauth')) {
-              throw GoogleSignInReauthRequiredException(e);
+              // 🎯 reauth 失败：回退到 lightweightAccount + authorizeScopes()
+              if (lightweightAccount != null) {
+                debugPrint('Google Drive: authenticate reauth failed, falling back to lightweightAccount + authorizeScopes()');
+                account = lightweightAccount;
+              } else {
+                throw GoogleSignInReauthRequiredException(e);
+              }
+            } else {
+              return null;
             }
-            return null;
+          } else {
+            // 🎯 其他 authenticate 异常：如果有 lightweightAccount 则回退
+            if (lightweightAccount != null) {
+              debugPrint('Google Drive: authenticate failed, falling back to lightweightAccount + authorizeScopes()');
+              account = lightweightAccount;
+            } else {
+              rethrow;
+            }
           }
-          rethrow;
         }
+      } else {
+        // 🎯 非 forceInteractive 模式，或平台不支持 authenticate()：
+        // 使用 lightweightAccount，后续通过 authorizeScopes() 获取授权
+        account = lightweightAccount;
+      }
+      if (account == null) {
+        return null;
       }
       GoogleSignInClientAuthorization authorization;
       try {
@@ -149,7 +180,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
         throw NoConnectionException(error.toString());
       }
       try {
-        await GoogleSignIn.instance.disconnect();
+        // 🎯 连接失败时仅 signOut 清理状态，不 disconnect（不撤销权限）
         await GoogleSignIn.instance.signOut();
       } catch (_) {}
       rethrow;
@@ -482,10 +513,12 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   Future<void> signOut() async {
     try {
-      await GoogleSignIn.instance.disconnect();
+      // 🎯 仅调用 signOut()，不调用 disconnect()
+      // disconnect() 会撤销应用对用户账户的访问权限（revoke grants），
+      // 导致重新 OAuth 时必须从头授权所有 scope
       await GoogleSignIn.instance.signOut();
     } catch (error) {
-      debugPrint('Failed to sign out or disconnect from Google. $error');
+      debugPrint('Failed to sign out from Google. $error');
     } finally {
       _authClient?.close();
       _authClient = null;
@@ -499,7 +532,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   // 🎯 静态登出方法：在 OAuth 前清理 SDK 缓存的登录状态，确保新用户可以登录
   static Future<void> signOutCurrent() async {
     try {
-      await GoogleSignIn.instance.disconnect();
+      // 🎯 仅调用 signOut()，不调用 disconnect()
+      // disconnect() 会撤销应用对用户账户的访问权限（revoke grants），
+      // 导致重新 OAuth 时必须从头授权所有 scope，对重新登录场景过于激进
       await GoogleSignIn.instance.signOut();
       debugPrint('Google Drive SDK signed out (static).');
     } catch (error) {
@@ -507,40 +542,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
     }
   }
 
-  // 🎯 静默登录验证：检查 SDK 缓存的凭据是否仍然有效，不弹出 UI
-  static Future<bool> verifySilentLogin({
-    String? serverClientId,
-  }) async {
-    try {
-      if (!_initialized && serverClientId != null) {
-        await GoogleSignIn.instance.initialize(serverClientId: serverClientId);
-        _initialized = true;
-        _initializedServerClientId = serverClientId;
-      }
-      final lightweightResult =
-          GoogleSignIn.instance.attemptLightweightAuthentication();
-      if (lightweightResult != null) {
-        final account = await lightweightResult;
-        if (account != null) {
-          debugPrint('Google Drive silent login verified: ${account.email}');
-          return true;
-        }
-      }
-      debugPrint('Google Drive silent login failed: no cached account');
-      return false;
-    } catch (e) {
-      debugPrint('Google Drive silent login verification failed: $e');
-      return false;
-    }
-  }
-
   Future<T> _executeRequest<T>(Future<T> Function() request, {int authRetryCount = 0}) async {
     _checkAuth();
-    // 🎯 优化：每次 API 请求前刷新授权，通过 authorizeScopes() 获取最新令牌
-    // 而非依赖持久化的 AuthClient 中的过期 token
-    if (authRetryCount == 0) {
-      await refreshAuthClient();
-    }
+    // 🎯 v7+ 最佳实践：不再每次请求前强制 refreshAuthClient()
+    // authClient 内部封装了自动带上可用 token 的逻辑，原生 SDK 会自动刷新 access token
+    // 仅在 401/403 错误时通过 handleAuthErrorAndRetry() 刷新凭据
     try {
       return await request();
     } on drive.DetailedApiRequestError catch (e, stackTrace) {
@@ -782,6 +788,12 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<String?> getAccessToken() async {
+    // 🎯 v7+ 最佳实践：不要长期缓存 accessToken 字符串
+    // 此处返回 _currentAuthorization 中的 accessToken，该值在以下时机更新：
+    // 1. connect() 中首次 authorizeScopes()
+    // 2. refreshAuthClient() / refreshAccessToken() 中重新 authorizeScopes()
+    // 3. handleAuthErrorAndRetry() 中 401/403 后重新 authorizeScopes()
+    // 调用方应确保在需要最新 token 时先调用 refreshAccessToken()
     if (_currentAuthorization != null) {
       return _currentAuthorization!.accessToken;
     }
