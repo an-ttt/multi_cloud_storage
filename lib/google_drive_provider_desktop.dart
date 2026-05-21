@@ -126,6 +126,9 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       provider.driveApi = drive.DriveApi(retryClient);
       provider.isAuthenticated = true;
       provider._accessToken = credentials.accessToken;
+      // 🎯 桌面端不设置父类 _currentAccount / _currentAuthorization（移动端专用字段）
+      // 桌面端重写了依赖这些字段的方法：loggedInUserDisplayName/Email/Id、getAccessToken
+      // 新增依赖父类字段的方法时，必须在桌面端重写
       debugPrint('Google Drive user signed in successfully.');
       return provider;
     } on SocketException catch (e) {
@@ -299,6 +302,23 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       await _rebuildDriveApiDesktop();
     } catch (e) {
       debugPrint('Google Drive Desktop _refreshAuthClient failed: $e');
+    }
+  }
+
+  // 🎯 静态登出方法：清理 _sharedGoogleSignIn 实例的会话状态
+  // 在 OAuth 前清理 SDK 缓存的登录状态，确保新用户可以登录
+  static Future<void> signOutCurrent() async {
+    try {
+      if (_sharedGoogleSignIn != null) {
+        await _sharedGoogleSignIn!.signOut();
+        debugPrint('Google Drive Desktop SDK signed out (static).');
+      }
+    } catch (error) {
+      debugPrint('Failed to sign out Google Drive Desktop SDK (static): $error');
+    } finally {
+      _sharedGoogleSignIn = null;
+      _sharedClientId = null;
+      _sharedScopes = null;
     }
   }
 

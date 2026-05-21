@@ -242,6 +242,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
           $fields:
               'nextPageToken, files(id, name, size, modifiedTime, mimeType, parents)',
           pageToken: pageToken,
+          pageSize: 1000,
         );
         if (fileList.files != null) {
           for (final file in fileList.files!) {
@@ -431,9 +432,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
     return _executeRequest(() async {
       await driveApi.about.get($fields: 'user');
       return false;
-    })
-        .then((_) => false)
-        .catchError((_) => true);
+    }).catchError((e) {
+      // 🎯 仅在 401/403 时视为 Token 过期，网络错误等不视为过期
+      if (e is drive.DetailedApiRequestError &&
+          (e.status == 401 || e.status == 403)) {
+        return true;
+      }
+      return false;
+    });
   }
 
   @override
@@ -476,7 +482,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
       }
       final permission = drive.Permission()
         ..type = 'anyone'
-        ..role = 'writer';
+        ..role = 'reader';
       await driveApi.permissions.create(permission, fileId, $fields: 'id');
       final fileMetadata = await driveApi.files
           .get(fileId, $fields: 'id, name, webViewLink') as drive.File;
@@ -723,11 +729,15 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   // 🎯 判断字符串是否像 Google Drive file ID
-  // Google Drive file ID 是 Base64url 编码的字符串，特征：不含 / 和 \，长度 > 10
+  // Google Drive file ID 是 Base64url 编码的字符串，特征：
+  // - 仅含字母、数字、_ 和 -（Base64url 字符集）
+  // - 长度通常 28-68 字符，最小阈值 15 以排除常见文件夹名
+  // - 不含 / 和 \
   static bool _isFileId(String str) {
     if (str.isEmpty || str == 'root' || str == 'appDataFolder') return false;
     if (str.contains('/') || str.contains('\\')) return false;
-    return str.length > 10;
+    if (str.length < 15) return false;
+    return RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(str);
   }
 
   // 🎯 将输入解析为 Google Drive file ID
@@ -785,6 +795,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
           : 'drive',
       q: query,
       $fields: 'files(id, name, size, modifiedTime, mimeType, parents)',
+      pageSize: 1000,
     );
     return fileList.files?.isNotEmpty == true ? fileList.files!.first : null;
   }
@@ -821,6 +832,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
           : 'drive',
       q: query,
       $fields: 'files(id, name, mimeType, parents)',
+      pageSize: 1000,
     );
     return fileList.files?.isNotEmpty == true ? fileList.files!.first : null;
   }

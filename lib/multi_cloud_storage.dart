@@ -102,7 +102,7 @@ class MultiCloudStorage {
 
   static Future<void> signOutGoogleDrive() async {
     if (Platform.isWindows || Platform.isLinux) {
-      // 桌面端暂不需要
+      await GoogleDriveProviderDesktop.signOutCurrent();
     } else {
       await GoogleDriveProvider.signOutCurrent();
     }
