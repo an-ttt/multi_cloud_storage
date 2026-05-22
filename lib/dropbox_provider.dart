@@ -924,7 +924,7 @@ class DropboxProvider extends CloudStorageProvider {
       modifiedTime:
           isDir ? null : DateTime.tryParse(data['server_modified'] ?? ''),
       isDirectory: isDir,
-      metadata: {'id': data['id'], if (!isDir) 'rev': data['rev']},
+      metadata: {'id': data['id'], if (!isDir) 'rev': data['rev'], 'path_display': data['path_display']},
       id: data['id'],
       mimeType: null,
     );
