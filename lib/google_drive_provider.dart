@@ -220,13 +220,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<List<CloudFile>> listFiles(
-      {String path = '', bool recursive = false}) {
+      {String path = '', required bool isPath, bool recursive = false}) {
     return _executeRequest(() async {
       final spaces = MultiCloudStorage.cloudAccess == CloudAccessType.appStorage
           ? 'appDataFolder'
           : 'drive';
-      debugPrint('GoogleDriveProvider.listFiles: path=$path, recursive=$recursive, spaces=$spaces');
-      final folder = await _getFolderByPath(path);
+      debugPrint('GoogleDriveProvider.listFiles: path=$path, isPath=$isPath, recursive=$recursive, spaces=$spaces');
+      final folder = await _getFolderByPath(path, isPath: isPath);
       if (folder == null || folder.id == null) {
         debugPrint('GoogleDriveProvider.listFiles: folder not found for path=$path');
         return [];
@@ -276,8 +276,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
         for (final cf in cloudFiles) {
           if (cf.isDirectory) {
             // 🎯 递归时使用 file ID 而非路径字符串，避免重复解析路径为 ID
+            // 有 ID 时 isPath=false，无 ID 回退路径时 isPath=true
             subFolderFiles
-                .addAll(await listFiles(path: cf.id ?? cf.path, recursive: true));
+                .addAll(await listFiles(path: cf.id ?? cf.path, isPath: cf.id == null, recursive: true));
           }
         }
         cloudFiles.addAll(subFolderFiles);
@@ -290,9 +291,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
   Future<String> downloadFile({
     required String remotePath,
     required String localPath,
+    required bool isPath,
   }) {
     return _executeRequest(() async {
-      final fileId = await _resolveFileId(remotePath);
+      final fileId = await _resolveFileId(remotePath, isPath: isPath);
       if (fileId == null) {
         throw Exception('GoogleDriveProvider: File not found at $remotePath');
       }
@@ -318,6 +320,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
   Future<String> uploadFile({
     required String localPath,
     required String remotePath,
+    required bool isPath,
     Map<String, dynamic>? metadata,
   }) {
     return _executeRequest(() async {
@@ -326,7 +329,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
       final parentPart = p.dirname(remotePath) == '.' ? '' : p.dirname(remotePath);
 
       // 先检查文件是否已存在（用 _resolveFileId 解析完整路径）
-      final existingFileId = await _resolveFileId(remotePath);
+      final existingFileId = await _resolveFileId(remotePath, isPath: isPath);
       if (existingFileId != null) {
         return uploadFileByShareToken(
           localPath: localPath,
@@ -344,12 +347,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
         driveFile.parents = [rootId];
       } else {
         // 🎯 用 _resolveFileId 解析 parentPart 为 folder ID，避免逐级路径遍历
-        final parentId = await _resolveFileId(parentPart);
+        // parentPart 的 isPath 与 remotePath 的 isPath 一致
+        final parentId = await _resolveFileId(parentPart, isPath: isPath);
         if (parentId != null) {
           driveFile.parents = [parentId];
         } else {
           // parent 不存在，创建父目录
-          final folder = await _getOrCreateFolder(parentPart);
+          final folder = await _getOrCreateFolder(parentPart, isPath: isPath);
           driveFile.parents = [folder.id!];
         }
       }
@@ -384,9 +388,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<void> deleteFile(String path) {
+  Future<void> deleteFile(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final fileId = await _resolveFileId(path);
+      final fileId = await _resolveFileId(path, isPath: isPath);
       if (fileId != null) {
         await driveApi.files.delete(fileId);
       }
@@ -394,16 +398,20 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<void> createDirectory(String path) {
+  Future<void> createDirectory(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      await _getOrCreateFolder(path);
+      // createDirectory 语义上只接受路径，isPath=false 时传入的是 file ID，语义矛盾
+      if (!isPath) {
+        throw ArgumentError('createDirectory requires isPath=true, got ID: $path');
+      }
+      await _getOrCreateFolder(path, isPath: isPath);
     });
   }
 
   @override
-  Future<CloudFile> getFileMetadata(String path) {
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final file = await _getFileByIdOrPath(path);
+      final file = await _getFileByIdOrPath(path, isPath: isPath);
       if (file == null) {
         throw Exception('GoogleDriveProvider: File not found at $path');
       }
@@ -432,11 +440,12 @@ class GoogleDriveProvider extends CloudStorageProvider {
   @override
   Future<Uint8List> getFileRange({
     required String path,
+    required bool isPath,
     required int offset,
     required int length,
   }) {
     return _executeRequest(() async {
-      final fileId = await _resolveFileId(path);
+      final fileId = await _resolveFileId(path, isPath: isPath);
       if (fileId == null) {
         throw Exception('GoogleDriveProvider: File not found at $path');
       }
@@ -453,9 +462,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> getDownloadUrl(String path) {
+  Future<String?> getDownloadUrl(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final fileId = await _resolveFileId(path);
+      final fileId = await _resolveFileId(path, isPath: isPath);
       if (fileId == null) return null;
       final metadata = await driveApi.files
           .get(fileId, $fields: 'id,webContentLink') as drive.File;
@@ -524,9 +533,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<Uri?> generateShareLink(String path) {
+  Future<Uri?> generateShareLink(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final fileId = await _resolveFileId(path);
+      final fileId = await _resolveFileId(path, isPath: isPath);
       if (fileId == null) {
         return null;
       }
@@ -758,13 +767,12 @@ class GoogleDriveProvider extends CloudStorageProvider {
         : 'root';
   }
 
-  Future<drive.File?> _getFolderByPath(String folderPath) async {
+  Future<drive.File?> _getFolderByPath(String folderPath, {required bool isPath}) async {
     if (folderPath.isEmpty || folderPath == '.' || folderPath == '/') {
       return _getRootFolder();
     }
-    // 🎯 如果输入是 Google Drive file ID，直接通过 API 获取文件夹对象
-    // 避免将 file ID 当作路径名逐级查找导致找不到
-    if (_isFileId(folderPath)) {
+    // 🎯 如果输入是 file ID（isPath=false），直接通过 API 获取文件夹对象
+    if (!isPath) {
       try {
         final file = await driveApi.files.get(folderPath,
             $fields: 'id, name, size, modifiedTime, mimeType, parents') as drive.File;
@@ -790,23 +798,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
     return currentFolder;
   }
 
-  // 🎯 判断字符串是否像 Google Drive file ID
-  // Google Drive file ID 是 Base64url 编码的字符串，特征：
-  // - 仅含字母、数字、_ 和 -（Base64url 字符集）
-  // - 长度通常 28-68 字符，最小阈值 15 以排除常见文件夹名
-  // - 不含 / 和 \
-  static bool _isFileId(String str) {
-    if (str.isEmpty || str == 'root' || str == 'appDataFolder') return false;
-    if (str.contains('/') || str.contains('\\')) return false;
-    if (str.length < 15) return false;
-    return RegExp(r'^[a-zA-Z0-9_-]+$').hasMatch(str);
-  }
-
   // 🎯 将输入解析为 Google Drive file ID
-  // 如果输入已经是 file ID，直接返回，无需 API 调用
-  // 如果输入是路径，通过 _getFileByPath 解析获取 file ID
-  Future<String?> _resolveFileId(String input) async {
-    if (_isFileId(input)) return input;
+  // 如果输入是 file ID（isPath=false），直接返回，无需 API 调用
+  // 如果输入是路径（isPath=true），通过 _getFileByPath 解析获取 file ID
+  Future<String?> _resolveFileId(String input, {required bool isPath}) async {
+    if (!isPath) return input;
     final file = await _getFileByPath(input);
     return file?.id;
   }
@@ -814,8 +810,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
   // 🎯 优先用 file ID 直接获取完整文件对象，fallback 到路径查找
   // 仅用于需要完整 drive.File 对象的场景（如 getFileMetadata）
   // 只需 file ID 的场景应使用 _resolveFileId，避免多余的 API 调用
-  Future<drive.File?> _getFileByIdOrPath(String str) async {
-    if (_isFileId(str)) {
+  Future<drive.File?> _getFileByIdOrPath(String str, {required bool isPath}) async {
+    if (!isPath) {
       try {
         final file = await driveApi.files.get(str, $fields: 'id, name, size, modifiedTime, mimeType, parents') as drive.File;
         if (file.id != null) return file;
@@ -862,12 +858,12 @@ class GoogleDriveProvider extends CloudStorageProvider {
     return fileList.files?.isNotEmpty == true ? fileList.files!.first : null;
   }
 
-  Future<drive.File> _getOrCreateFolder(String folderPath) async {
+  Future<drive.File> _getOrCreateFolder(String folderPath, {required bool isPath}) async {
     if (folderPath.isEmpty || folderPath == '.' || folderPath == '/') {
       return _getRootFolder();
     }
-    // 🎯 如果输入是 Google Drive file ID，直接通过 API 获取文件夹对象
-    if (_isFileId(folderPath)) {
+    // 🎯 如果输入是 file ID（isPath=false），直接通过 API 获取文件夹对象
+    if (!isPath) {
       try {
         final file = await driveApi.files.get(folderPath,
             $fields: 'id, name, size, modifiedTime, mimeType, parents') as drive.File;
@@ -970,15 +966,6 @@ class GoogleDriveProvider extends CloudStorageProvider {
   // Google Drive uses SDK-managed tokens, no storage migration needed
   @override
   Future<void> saveToStorage(String storageKeyPrefix) async {}
-
-  // 🎯 Google Drive 的 file ID 不需要路径规范化，原样传递
-  // GoogleDriveProvider 内部的 _getFileByIdOrPath 会自动判断是 file ID 还是路径
-  @override
-  String normalizePath(String path) {
-    if (path.isEmpty) return '/';
-    if (path == 'root') return '/';
-    return path;
-  }
 }
 
 Future<GoogleDriveProvider?> connectToGoogleDrive(

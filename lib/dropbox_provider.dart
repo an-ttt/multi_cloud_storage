@@ -249,12 +249,12 @@ class DropboxProvider extends CloudStorageProvider {
   /// Lists all files and directories at the specified [path].
   @override
   Future<List<CloudFile>> listFiles(
-      {String path = '', bool recursive = false}) {
+      {String path = '', required bool isPath, bool recursive = false}) {
     return _executeRequest(() async {
       final List<CloudFile> allFiles = [];
       String? cursor;
       bool hasMore = true;
-      String initialPath = path == '/' ? '' : _normalizePath(path);
+      String initialPath = path == '/' ? '' : _ensurePathFormat(path, isPath: isPath);
       debugPrint(
           'Listing files in Dropbox path: "$initialPath", recursive: $recursive');
       // Paginate through results using the cursor until all files are fetched.
@@ -291,9 +291,9 @@ class DropboxProvider extends CloudStorageProvider {
   /// Downloads a file from a [remotePath] to a [localPath] on the device.
   @override
   Future<String> downloadFile(
-      {required String remotePath, required String localPath}) {
+      {required String remotePath, required String localPath, required bool isPath}) {
     return _executeRequest(() async {
-      final normalizedPath = _normalizePath(remotePath);
+      final normalizedPath = _ensurePathFormat(remotePath, isPath: isPath);
       debugPrint(
           'Downloading from Dropbox path: $normalizedPath to $localPath');
       final response = await _dio.post(
@@ -319,11 +319,12 @@ class DropboxProvider extends CloudStorageProvider {
   Future<String> uploadFile(
       {required String localPath,
       required String remotePath,
+      required bool isPath,
       Map<String, dynamic>? metadata}) {
     return _executeRequest(() async {
       final file = File(localPath);
       final fileSize = await file.length();
-      final normalizedPath = _normalizePath(remotePath);
+      final normalizedPath = _ensurePathFormat(remotePath, isPath: isPath);
       debugPrint('Uploading $localPath to Dropbox at $normalizedPath');
       final response = await _dio.post(
         'https://content.dropboxapi.com/2/files/upload',
@@ -349,9 +350,9 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Deletes the file or directory at the specified [path].
   @override
-  Future<void> deleteFile(String path) {
+  Future<void> deleteFile(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final normalizedPath = _normalizePath(path);
+      final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       debugPrint('Attempting to delete Dropbox path: $normalizedPath');
       try {
         await _dio.post(
@@ -376,9 +377,13 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Creates a new directory at the specified [path].
   @override
-  Future<void> createDirectory(String path) {
+  Future<void> createDirectory(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final normalizedPath = _normalizePath(path);
+      // createDirectory 语义上只接受路径，isPath=false 时传入的是文件 ID，语义矛盾
+      if (!isPath) {
+        throw ArgumentError('createDirectory requires isPath=true, got ID: $path');
+      }
+      final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       debugPrint('Creating Dropbox directory: $normalizedPath');
       try {
         await _dio.post(
@@ -403,9 +408,9 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Retrieves metadata for the file or directory at the specified [path].
   @override
-  Future<CloudFile> getFileMetadata(String path) {
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final normalizedPath = _normalizePath(path);
+      final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       debugPrint('Getting metadata for Dropbox path: $normalizedPath');
       final response = await _dio.post(
         'https://api.dropboxapi.com/2/files/get_metadata',
@@ -423,11 +428,12 @@ class DropboxProvider extends CloudStorageProvider {
   @override
   Future<Uint8List> getFileRange({
     required String path,
+    required bool isPath,
     required int offset,
     required int length,
   }) {
     return _executeRequest(() async {
-      final normalizedPath = _normalizePath(path);
+      final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       final response = await _dio.post(
         'https://content.dropboxapi.com/2/files/download',
         options: Options(
@@ -443,9 +449,9 @@ class DropboxProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> getDownloadUrl(String path) {
+  Future<String?> getDownloadUrl(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final normalizedPath = _normalizePath(path);
+      final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       final response = await _dio.post(
         'https://api.dropboxapi.com/2/files/get_temporary_link',
         data: jsonEncode({'path': normalizedPath}),
@@ -540,9 +546,9 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Generates a shareable link for the file or directory at the [path].
   @override
-  Future<Uri?> generateShareLink(String path) {
+  Future<Uri?> generateShareLink(String path, {required bool isPath}) {
     return _executeRequest(() async {
-      final normalizedPath = _normalizePath(path);
+      final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       debugPrint('Generating sharable link for Dropbox path: $normalizedPath');
       try {
         // Attempt to create a new public, editable share link.
@@ -883,14 +889,17 @@ class DropboxProvider extends CloudStorageProvider {
     debugPrint('Cleared Dropbox token from secure storage.');
   }
 
-  /// Normalizes a path for the Dropbox API (must start with '/').
-  String _normalizePath(String path) {
+  /// 根据 isPath 确保路径格式正确：
+  /// - isPath=true 时，确保路径以 / 开头（空路径或 '/' 返回空字符串，即 Dropbox 根目录）
+  /// - isPath=false 时，path 为文件 ID（如 id:xxx），原样返回
+  String _ensurePathFormat(String path, {required bool isPath}) {
+    if (!isPath) {
+      // 文件 ID 格式（如 id:abc123），原样返回
+      return path;
+    }
+    // 路径格式：确保以 / 开头
     if (path.isEmpty || path == '/') {
       return ''; // Root is an empty string for Dropbox API.
-    }
-    // Dropbox 文件 ID（如 id:abc123）应原样传递，不添加前导 /
-    if (path.startsWith('id:')) {
-      return path;
     }
     return p.url.normalize(path.startsWith('/') ? path : '/$path');
   }

@@ -44,8 +44,11 @@ class ICloudProvider extends CloudStorageProvider {
   @override
   Future<List<CloudFile>> listFiles({
     required String path,
+    required bool isPath,
     bool recursive = false,
   }) async {
+    // iCloud 没有文件 ID 概念，isPath 必须为 true
+    if (!isPath) throw UnsupportedError('iCloud does not support file ID');
     // The package fetches all file metadata at once.
     final allFiles = await _icloudSync.gather(containerId: _containerId);
     final List<CloudFile> results = [];
@@ -79,7 +82,10 @@ class ICloudProvider extends CloudStorageProvider {
   Future<String> downloadFile({
     required String remotePath,
     required String localPath,
+    required bool isPath,
   }) async {
+    // iCloud 没有文件 ID 概念，isPath 必须为 true
+    if (!isPath) throw UnsupportedError('iCloud does not support file ID');
     final completer = Completer<String>();
     StreamSubscription? progressSubscription;
     try {
@@ -162,8 +168,11 @@ class ICloudProvider extends CloudStorageProvider {
   Future<String> uploadFile({
     required String localPath,
     required String remotePath,
+    required bool isPath,
     Map<String, dynamic>? metadata,
   }) async {
+    // iCloud 没有文件 ID 概念，isPath 必须为 true
+    if (!isPath) throw UnsupportedError('iCloud does not support file ID');
     try {
       await _icloudSync.upload(
         containerId: _containerId,
@@ -184,11 +193,13 @@ class ICloudProvider extends CloudStorageProvider {
 
   /// Deletes the file or directory at the specified [path].
   @override
-  Future<void> deleteFile(String path) async {
+  Future<void> deleteFile(String path, {required bool isPath}) async {
+    // iCloud 没有文件 ID 概念，isPath 必须为 true
+    if (!isPath) throw UnsupportedError('iCloud does not support file ID');
     // M-18 fix: 先查询元数据判断是否为目录，而非依赖路径末尾的 /
     bool isDirectory;
     try {
-      final metadata = await getFileMetadata(path);
+      final metadata = await getFileMetadata(path, isPath: true);
       isDirectory = metadata.isDirectory;
     } catch (_) {
       // 如果元数据查询失败，回退到路径判断
@@ -202,7 +213,7 @@ class ICloudProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<void> createDirectory(String path) {
+  Future<void> createDirectory(String path, {required bool isPath}) {
     // The `iCloud_Storage_Sync` package does not provide a method to explicitly
     // create an empty directory. Directories are created implicitly when a file
     // is uploaded into a non-existent path.
@@ -212,7 +223,9 @@ class ICloudProvider extends CloudStorageProvider {
 
   /// Retrieves metadata for the file or directory at the specified [path].
   @override
-  Future<CloudFile> getFileMetadata(String path) async {
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath}) async {
+    // iCloud 没有文件 ID 概念，isPath 必须为 true
+    if (!isPath) throw UnsupportedError('iCloud does not support file ID');
     final allFiles = await _icloudSync.gather(containerId: _containerId);
     final foundFile = allFiles.firstWhere(
       (f) => f.relativePath == path,
@@ -245,7 +258,7 @@ class ICloudProvider extends CloudStorageProvider {
 
   /// iCloud access is limited to the container and can't share files directly.
   @override
-  Future<Uri?> generateShareLink(String path) {
+  Future<Uri?> generateShareLink(String path, {required bool isPath}) {
     throw UnsupportedError(
         'iCloudProvider: Generating sharable links is not supported.');
   }
@@ -300,6 +313,7 @@ class ICloudProvider extends CloudStorageProvider {
   @override
   Future<Uint8List> getFileRange({
     required String path,
+    required bool isPath,
     required int offset,
     required int length,
   }) async {
@@ -307,7 +321,7 @@ class ICloudProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> getDownloadUrl(String path) async {
+  Future<String?> getDownloadUrl(String path, {required bool isPath}) async {
     throw UnsupportedError('getDownloadUrl is not supported for iCloud');
   }
 

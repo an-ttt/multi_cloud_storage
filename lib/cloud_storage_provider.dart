@@ -2,25 +2,32 @@ import 'dart:typed_data';
 
 abstract class CloudStorageProvider {
   /// Lists all files and directories at the specified [path].
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
   Future<List<CloudFile>> listFiles({
     required String path,
+    required bool isPath,
     bool recursive = false,
   });
 
   /// Downloads a file from a [remotePath] to a [localPath] on the device.
+  /// [isPath] true 表示 remotePath 是路径，false 表示 remotePath 是文件 ID
   Future<String> downloadFile({
     required String remotePath,
     required String localPath,
+    required bool isPath,
   });
 
   /// Uploads a file from [localPath] to a [remotePath] in the cloud.
+  /// [isPath] true 表示 remotePath 是路径，false 表示 remotePath 是文件 ID
   Future<String> uploadFile({
     required String localPath,
     required String remotePath,
+    required bool isPath,
     Map<String, dynamic>? metadata,
   });
 
   // 🎯 直接用 parentId + fileName 上传文件，避免拼接路径字符串后重新解析
+  // parentId 语义固定为文件 ID，不需要 isPath 参数
   // Google Drive 等基于 ID 的 Provider 应 override 此方法，直接用 parentId 设置 parents
   // 其他 Provider 使用 default 实现（拼接路径后调 uploadFile）
   Future<String> uploadFileToParent({
@@ -30,17 +37,20 @@ abstract class CloudStorageProvider {
     Map<String, dynamic>? metadata,
   }) async {
     final remotePath = '$parentId/$fileName';
-    return uploadFile(localPath: localPath, remotePath: remotePath, metadata: metadata);
+    return uploadFile(localPath: localPath, remotePath: remotePath, isPath: false, metadata: metadata);
   }
 
   /// Deletes the file or directory at the specified [path].
-  Future<void> deleteFile(String path);
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
+  Future<void> deleteFile(String path, {required bool isPath});
 
   /// Creates a new directory at the specified [path].
-  Future<void> createDirectory(String path);
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
+  Future<void> createDirectory(String path, {required bool isPath});
 
   /// Retrieves metadata for the file or directory at the specified [path].
-  Future<CloudFile> getFileMetadata(String path);
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath});
 
   /// Retrieves the display name of the currently logged-in user.
   Future<String?> loggedInUserDisplayName();
@@ -59,7 +69,8 @@ abstract class CloudStorageProvider {
   Future<bool> logout();
 
   /// Generates a shareable link for the file or directory at the [path].
-  Future<Uri?> generateShareLink(String path);
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
+  Future<Uri?> generateShareLink(String path, {required bool isPath});
 
   /// Extracts a share token from a given [shareLink].
   Future<String?> getShareTokenFromShareLink(Uri shareLink);
@@ -75,13 +86,16 @@ abstract class CloudStorageProvider {
     Map<String, dynamic>? metadata,
   });
 
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
   Future<Uint8List> getFileRange({
     required String path,
+    required bool isPath,
     required int offset,
     required int length,
   });
 
-  Future<String?> getDownloadUrl(String path);
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
+  Future<String?> getDownloadUrl(String path, {required bool isPath});
 
   Future<String?> getAccessToken();
 
@@ -100,16 +114,6 @@ abstract class CloudStorageProvider {
   Future<String?> loggedInUserEmail();
 
   Future<String?> loggedInUserId();
-
-  // 🎯 路径规范化虚函数，子类可 override 以适配不同云存储的 ID/路径格式
-  // 默认实现：确保路径以 / 开头，Dropbox id: 前缀原样传递
-  // Google Drive 等 provider 可 override 为原样传递（file ID 不需要路径规范化）
-  String normalizePath(String path) {
-    if (path.isEmpty) return '/';
-    if (path == 'root') return '/';
-    if (path.startsWith('id:')) return path;
-    return path.startsWith('/') ? path : '/$path';
-  }
 }
 
 /// Represents a file or directory within the cloud storage.

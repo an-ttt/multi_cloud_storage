@@ -482,6 +482,7 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<List<CloudFile>> listFiles({
     String path = '',
+    required bool isPath,
     bool recursive = false,
   }) {
     return _executeRequest(
@@ -494,7 +495,7 @@ class OneDriveProvider extends CloudStorageProvider {
           final String url;
           if (nextLink != null) {
             url = nextLink;
-          } else if (_isItemId(effectivePath)) {
+          } else if (!isPath) {
             // 🎯 使用 item ID 直接访问，避免路径解析
             url = _buildItemUrl(effectivePath, '/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType');
           } else {
@@ -511,7 +512,7 @@ class OneDriveProvider extends CloudStorageProvider {
           for (final cf in cloudFiles) {
             if (cf.isDirectory) {
               // 🎯 递归时使用 item ID 而非路径字符串，避免重复解析路径为 ID
-              subFolderFiles.addAll(await listFiles(path: cf.id ?? cf.path, recursive: true));
+              subFolderFiles.addAll(await listFiles(path: cf.id ?? cf.path, isPath: cf.id != null ? false : true, recursive: true));
             }
           }
           cloudFiles.addAll(subFolderFiles);
@@ -544,11 +545,12 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<String> downloadFile({
     required String remotePath,
     required String localPath,
+    required bool isPath,
   }) {
     return _executeRequest(
       () async {
         final String url;
-        if (_isItemId(remotePath)) {
+        if (!isPath) {
           url = _buildItemUrl(remotePath, '/content');
         } else {
           final encodedPath = _encodePath(remotePath);
@@ -573,6 +575,7 @@ class OneDriveProvider extends CloudStorageProvider {
   Future<String> uploadFile({
     required String localPath,
     required String remotePath,
+    required bool isPath,
     Map<String, dynamic>? metadata,
   }) {
     return _executeRequest(
@@ -583,7 +586,7 @@ class OneDriveProvider extends CloudStorageProvider {
           // 小文件：简单上传
           final bytes = await file.readAsBytes();
           final String url;
-          if (_isItemId(remotePath)) {
+          if (!isPath) {
             // 🎯 使用 item ID 直接上传（更新已有文件）
             url = _buildItemUrl(remotePath, '/content');
           } else {
@@ -603,7 +606,7 @@ class OneDriveProvider extends CloudStorageProvider {
           // 大文件：创建上传会话，分块上传
           // 每个 chunk 大小必须是 320 KiB 的倍数（Microsoft Graph API 要求）
           final String createSessionUrl;
-          if (_isItemId(remotePath)) {
+          if (!isPath) {
             // 🎯 使用 item ID 创建上传会话（更新已有文件）
             createSessionUrl = _buildItemUrl(remotePath, '/createUploadSession');
           } else {
@@ -680,11 +683,11 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<void> deleteFile(String path) {
+  Future<void> deleteFile(String path, {required bool isPath}) {
     return _executeRequest(
       () async {
         final String url;
-        if (_isItemId(path)) {
+        if (!isPath) {
           url = _buildItemUrl(path, '');
         } else {
           final encodedPath = _encodePath(path);
@@ -699,15 +702,19 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<void> createDirectory(String path) {
+  Future<void> createDirectory(String path, {required bool isPath}) {
     return _executeRequest(
       () async {
+        // createDirectory 语义上只接受路径，isPath=false 时传入的是 item ID，语义矛盾
+        if (!isPath) {
+          throw ArgumentError('createDirectory requires isPath=true, got ID: $path');
+        }
         final parentPath = path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '';
         final dirName = path.split('/').last;
         String url;
         if (parentPath.isEmpty) {
           url = 'https://graph.microsoft.com/v1.0/me/drive/root/children';
-        } else if (_isItemId(parentPath)) {
+        } else if (!isPath) {
           // 🎯 父路径是 item ID，使用 ID-based URL
           url = _buildItemUrl(parentPath, '/children');
         } else {
@@ -729,11 +736,11 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<CloudFile> getFileMetadata(String path) {
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath}) {
     return _executeRequest(
       () async {
         final String url;
-        if (_isItemId(path)) {
+        if (!isPath) {
           url = _buildItemUrl(path, '?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType');
         } else {
           final encodedPath = _encodePath(path);
@@ -768,12 +775,13 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<Uint8List> getFileRange({
     required String path,
+    required bool isPath,
     required int offset,
     required int length,
   }) {
     return _executeRequest(() async {
       final String url;
-      if (_isItemId(path)) {
+      if (!isPath) {
         url = _buildItemUrl(path, '/content');
       } else {
         final encodedPath = _encodePath(path);
@@ -793,10 +801,10 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> getDownloadUrl(String path) {
+  Future<String?> getDownloadUrl(String path, {required bool isPath}) {
     return _executeRequest(() async {
       final String url;
-      if (_isItemId(path)) {
+      if (!isPath) {
         url = _buildItemUrl(path, '?\$select=@content.downloadUrl');
       } else {
         final encodedPath = _encodePath(path);
@@ -931,11 +939,11 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<Uri?> generateShareLink(String path) {
+  Future<Uri?> generateShareLink(String path, {required bool isPath}) {
     return _executeRequest(
       () async {
         final String url;
-        if (_isItemId(path)) {
+        if (!isPath) {
           // 🎯 使用 item ID 直接创建共享链接
           url = _buildItemUrl(path, '/createLink');
         } else {
@@ -1078,23 +1086,6 @@ class OneDriveProvider extends CloudStorageProvider {
     final cleanPath = path.startsWith('/') ? path.substring(1) : path;
     if (cleanPath.isEmpty) return '';
     return cleanPath.split('/').map(Uri.encodeComponent).join('/');
-  }
-
-  // 🎯 OneDrive 的 normalizePath：识别 item ID 不添加 / 前缀
-  // item ID（如 ABCD1234!567）不应被当作路径处理
-  @override
-  String normalizePath(String path) {
-    if (path.isEmpty) return '/';
-    if (_isItemId(path)) return path;
-    return path.startsWith('/') ? path : '/$path';
-  }
-
-  // 🎯 判断字符串是否为 OneDrive item ID（而非文件路径）
-  // OneDrive item ID 特征：不含 /，且包含 ! 或 UUID 格式
-  static bool _isItemId(String str) {
-    if (str.isEmpty) return false;
-    if (str.contains('/')) return false;
-    return str.contains('!') || RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-').hasMatch(str);
   }
 
   // 🎯 构建 item ID 格式的 API URL
