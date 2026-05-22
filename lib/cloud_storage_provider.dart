@@ -13,12 +13,25 @@ abstract class CloudStorageProvider {
     required String localPath,
   });
 
-  /// Uploads a file from a [localPath] to a [remotePath] in the cloud.
+  /// Uploads a file from [localPath] to a [remotePath] in the cloud.
   Future<String> uploadFile({
     required String localPath,
     required String remotePath,
     Map<String, dynamic>? metadata,
   });
+
+  // 🎯 直接用 parentId + fileName 上传文件，避免拼接路径字符串后重新解析
+  // Google Drive 等基于 ID 的 Provider 应 override 此方法，直接用 parentId 设置 parents
+  // 其他 Provider 使用 default 实现（拼接路径后调 uploadFile）
+  Future<String> uploadFileToParent({
+    required String localPath,
+    required String parentId,
+    required String fileName,
+    Map<String, dynamic>? metadata,
+  }) async {
+    final remotePath = '$parentId/$fileName';
+    return uploadFile(localPath: localPath, remotePath: remotePath, metadata: metadata);
+  }
 
   /// Deletes the file or directory at the specified [path].
   Future<void> deleteFile(String path);

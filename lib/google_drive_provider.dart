@@ -321,6 +321,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
     Map<String, dynamic>? metadata,
   }) {
     return _executeRequest(() async {
+      // 🎯 拆分路径为 parent + fileName，优先用 ID 定位父目录
+      final fileName = p.basename(remotePath);
+      final parentPart = p.dirname(remotePath) == '.' ? '' : p.dirname(remotePath);
+
+      // 先检查文件是否已存在（用 _resolveFileId 解析完整路径）
       final existingFileId = await _resolveFileId(remotePath);
       if (existingFileId != null) {
         return uploadFileByShareToken(
@@ -328,19 +333,53 @@ class GoogleDriveProvider extends CloudStorageProvider {
           shareToken: existingFileId,
           metadata: metadata,
         );
-      } else {
-        final file = File(localPath);
-        final fileName = p.basename(remotePath);
-        final remoteDir = p.dirname(remotePath) == '.' ? '' : p.dirname(remotePath);
-        final folder = await _getOrCreateFolder(remoteDir);
-        final driveFile = drive.File()
-          ..name = fileName
-          ..parents = [folder.id!];
-        final media = drive.Media(file.openRead(), await file.length());
-        final uploadedFile = await driveApi.files
-            .create(driveFile, uploadMedia: media, $fields: 'id, name');
-        return uploadedFile.id!;
       }
+
+      // 文件不存在，创建新文件
+      final driveFile = drive.File()
+        ..name = fileName;
+
+      if (parentPart.isEmpty) {
+        final rootId = await _getRootFolderId();
+        driveFile.parents = [rootId];
+      } else {
+        // 🎯 用 _resolveFileId 解析 parentPart 为 folder ID，避免逐级路径遍历
+        final parentId = await _resolveFileId(parentPart);
+        if (parentId != null) {
+          driveFile.parents = [parentId];
+        } else {
+          // parent 不存在，创建父目录
+          final folder = await _getOrCreateFolder(parentPart);
+          driveFile.parents = [folder.id!];
+        }
+      }
+
+      final file = File(localPath);
+      final media = drive.Media(file.openRead(), await file.length());
+      final uploadedFile = await driveApi.files
+          .create(driveFile, uploadMedia: media, $fields: 'id, name');
+      return uploadedFile.id!;
+    });
+  }
+
+  // 🎯 直接用 parentId + fileName 上传文件，无需路径解析
+  // Google Drive 的 parentId 就是 file ID，直接设置为 drive.File 的 parents
+  @override
+  Future<String> uploadFileToParent({
+    required String localPath,
+    required String parentId,
+    required String fileName,
+    Map<String, dynamic>? metadata,
+  }) {
+    return _executeRequest(() async {
+      final driveFile = drive.File()
+        ..name = fileName
+        ..parents = [parentId];
+      final file = File(localPath);
+      final media = drive.Media(file.openRead(), await file.length());
+      final uploadedFile = await driveApi.files
+          .create(driveFile, uploadMedia: media, $fields: 'id, name');
+      return uploadedFile.id!;
     });
   }
 
@@ -826,6 +865,17 @@ class GoogleDriveProvider extends CloudStorageProvider {
   Future<drive.File> _getOrCreateFolder(String folderPath) async {
     if (folderPath.isEmpty || folderPath == '.' || folderPath == '/') {
       return _getRootFolder();
+    }
+    // 🎯 如果输入是 Google Drive file ID，直接通过 API 获取文件夹对象
+    if (_isFileId(folderPath)) {
+      try {
+        final file = await driveApi.files.get(folderPath,
+            $fields: 'id, name, size, modifiedTime, mimeType, parents') as drive.File;
+        if (file.id != null && file.mimeType == 'application/vnd.google-apps.folder') return file;
+      } catch (e) {
+        debugPrint('GoogleDriveProvider: _getOrCreateFolder direct ID lookup failed for "$folderPath": $e');
+        rethrow;
+      }
     }
     final normalizedPath = folderPath
         .replaceAll(RegExp(r'^/+'), '')
