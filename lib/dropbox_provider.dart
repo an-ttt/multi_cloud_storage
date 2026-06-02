@@ -39,7 +39,7 @@ class DropboxProvider extends CloudStorageProvider {
 
   // 🎯 桌面端（Windows/Linux）使用 http://localhost 作为 redirect URI
   // 原因：flutter_web_auth_2 在桌面端默认使用 WebView（useWebview: true），
-  // WebView 只能拦截 http/https 导航，自定义 scheme（如 musicgather://）无法被拦截。
+  // WebView 只能拦截 http/https 导航，自定义 scheme（如 example://）无法被拦截。
   // Dropbox 允许 localhost URI 无需预注册，且支持 HTTP scheme。
   // 参考：RFC 8252 §8.3（Loopback Redirect），Dropbox OAuth 文档
   String get _effectiveRedirectUri {
@@ -53,7 +53,7 @@ class DropboxProvider extends CloudStorageProvider {
   DropboxProvider._create({
     required String appKey,
     required String redirectUri,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 30),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -80,7 +80,7 @@ class DropboxProvider extends CloudStorageProvider {
     required String redirectUri,
     bool forceInteractive = false,
     String? storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 30),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -156,7 +156,7 @@ class DropboxProvider extends CloudStorageProvider {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 30),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -201,7 +201,7 @@ class DropboxProvider extends CloudStorageProvider {
     required String appKey,
     required String redirectUri,
     required String storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 30),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -975,7 +975,7 @@ class DropboxProvider extends CloudStorageProvider {
 
   // 🎯 静态方法：清除默认 key 下的残留 token，确保新建账户时走交互式 OAuth 流程
   // 注意：这不是"登出"，只清除 SecureStorage 中的默认 key，不影响其他账户的 account-specific key
-  static Future<void> clearDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+  static Future<void> clearDefaultToken({required String sharedPreferencesName}) async {
     final storage = FlutterSecureStorage(
       aOptions: AndroidOptions(
         storageNamespace: sharedPreferencesName,

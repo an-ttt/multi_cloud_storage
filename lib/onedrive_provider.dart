@@ -34,7 +34,7 @@ class OneDriveProvider extends CloudStorageProvider {
   OneDriveProvider._({
     required this.clientId,
     required this.redirectUri,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 10),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -57,7 +57,7 @@ class OneDriveProvider extends CloudStorageProvider {
     required String redirectUri,
     String? scopes,
     String? storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 10),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -100,7 +100,7 @@ class OneDriveProvider extends CloudStorageProvider {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 10),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -141,7 +141,7 @@ class OneDriveProvider extends CloudStorageProvider {
     required String clientId,
     required String redirectUri,
     required String storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 10),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -462,7 +462,7 @@ class OneDriveProvider extends CloudStorageProvider {
     _tokenExpiry = null;
   }
 
-  static Future<void> clearDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+  static Future<void> clearDefaultToken({required String sharedPreferencesName}) async {
     final storage = FlutterSecureStorage(
       aOptions: AndroidOptions(
         storageNamespace: sharedPreferencesName,

@@ -20,7 +20,7 @@ class MultiCloudStorage {
           required String redirectUri,
           bool forceInteractive = false,
           String? storageKeyPrefix,
-          String sharedPreferencesName = 'musicgather_secure_storage',
+          required String sharedPreferencesName,
           Duration connectTimeout = const Duration(seconds: 30),
           Duration sendTimeout = const Duration(seconds: 30),
           Duration receiveTimeout = const Duration(seconds: 30)}) =>
@@ -109,11 +109,11 @@ class MultiCloudStorage {
   }
 
   // 🎯 Dropbox 清除默认 key 下的残留 token，确保新建账户时走交互式 OAuth 流程
-  static Future<void> clearDropboxDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+  static Future<void> clearDropboxDefaultToken({required String sharedPreferencesName}) async {
     await DropboxProvider.clearDefaultToken(sharedPreferencesName: sharedPreferencesName);
   }
 
-  static Future<void> clearOneDriveDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
+  static Future<void> clearOneDriveDefaultToken({required String sharedPreferencesName}) async {
     await OneDriveProvider.clearDefaultToken(sharedPreferencesName: sharedPreferencesName);
   }
 
@@ -126,7 +126,7 @@ class MultiCloudStorage {
     required String redirectUri,
     String? scopes,
     String? storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 10),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -148,7 +148,7 @@ class MultiCloudStorage {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 30),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -172,7 +172,7 @@ class MultiCloudStorage {
     String? refreshToken,
     int? expiresIn,
     String? storageKeyPrefix,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration connectTimeout = const Duration(seconds: 10),
     Duration sendTimeout = const Duration(seconds: 30),
     Duration receiveTimeout = const Duration(seconds: 30),
@@ -196,7 +196,7 @@ class MultiCloudStorage {
     String? redirectUri,
     String? clientId,
     String? clientSecret,
-    String sharedPreferencesName = 'musicgather_secure_storage',
+    required String sharedPreferencesName,
     Duration dropboxConnectTimeout = const Duration(seconds: 30),
     Duration dropboxSendTimeout = const Duration(seconds: 30),
     Duration dropboxReceiveTimeout = const Duration(seconds: 30),
