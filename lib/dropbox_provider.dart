@@ -64,8 +64,7 @@ class DropboxProvider extends CloudStorageProvider {
         _receiveTimeout = receiveTimeout {
     _secureStorage = FlutterSecureStorage(
       aOptions: AndroidOptions(
-        encryptedSharedPreferences: false,
-        sharedPreferencesName: sharedPreferencesName,
+        storageNamespace: sharedPreferencesName,
       ),
       iOptions: IOSOptions(
         accessibility: KeychainAccessibility.first_unlock_this_device,
@@ -979,8 +978,7 @@ class DropboxProvider extends CloudStorageProvider {
   static Future<void> clearDefaultToken({String sharedPreferencesName = 'musicgather_secure_storage'}) async {
     final storage = FlutterSecureStorage(
       aOptions: AndroidOptions(
-        encryptedSharedPreferences: false,
-        sharedPreferencesName: sharedPreferencesName,
+        storageNamespace: sharedPreferencesName,
       ),
       iOptions: IOSOptions(
         accessibility: KeychainAccessibility.first_unlock_this_device,
