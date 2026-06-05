@@ -13,6 +13,7 @@ import 'package:path/path.dart' as p;
 import 'cloud_storage_provider.dart';
 import 'exceptions/no_connection_exception.dart';
 import 'exceptions/not_found_exception.dart';
+import 'multi_cloud_storage.dart' show CloudAccessType;
 
 class DropboxProvider extends CloudStorageProvider {
   // --- Configuration Properties ---
@@ -248,7 +249,8 @@ class DropboxProvider extends CloudStorageProvider {
   /// Lists all files and directories at the specified [path].
   @override
   Future<List<CloudFile>> listFiles(
-      {String path = '', required bool isPath, bool recursive = false}) {
+      {String path = '', required bool isPath, bool recursive = false, CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final List<CloudFile> allFiles = [];
       String? cursor;
@@ -290,7 +292,8 @@ class DropboxProvider extends CloudStorageProvider {
   /// Downloads a file from a [remotePath] to a [localPath] on the device.
   @override
   Future<String> downloadFile(
-      {required String remotePath, required String localPath, required bool isPath}) {
+      {required String remotePath, required String localPath, required bool isPath, CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final normalizedPath = _ensurePathFormat(remotePath, isPath: isPath);
       debugPrint(
@@ -319,7 +322,9 @@ class DropboxProvider extends CloudStorageProvider {
       {required String localPath,
       required String remotePath,
       required bool isPath,
-      Map<String, dynamic>? metadata}) {
+      Map<String, dynamic>? metadata,
+      CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final file = File(localPath);
       final fileSize = await file.length();
@@ -349,7 +354,8 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Deletes the file or directory at the specified [path].
   @override
-  Future<void> deleteFile(String path, {required bool isPath}) {
+  Future<void> deleteFile(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       debugPrint('Attempting to delete Dropbox path: $normalizedPath');
@@ -376,7 +382,8 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Creates a new directory at the specified [path].
   @override
-  Future<void> createDirectory(String path, {required bool isPath}) {
+  Future<void> createDirectory(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       // createDirectory 语义上只接受路径，isPath=false 时传入的是文件 ID，语义矛盾
       if (!isPath) {
@@ -407,7 +414,8 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Retrieves metadata for the file or directory at the specified [path].
   @override
-  Future<CloudFile> getFileMetadata(String path, {required bool isPath}) {
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       debugPrint('Getting metadata for Dropbox path: $normalizedPath');
@@ -430,7 +438,9 @@ class DropboxProvider extends CloudStorageProvider {
     required bool isPath,
     required int offset,
     required int length,
+    CloudAccessType? cloudAccess,
   }) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       final response = await _dio.post(
@@ -448,7 +458,8 @@ class DropboxProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> getDownloadUrl(String path, {required bool isPath}) {
+  Future<String?> getDownloadUrl(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       final response = await _dio.post(
@@ -545,7 +556,8 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Generates a shareable link for the file or directory at the [path].
   @override
-  Future<Uri?> generateShareLink(String path, {required bool isPath}) {
+  Future<Uri?> generateShareLink(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
+    // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {
       final normalizedPath = _ensurePathFormat(path, isPath: isPath);
       debugPrint('Generating sharable link for Dropbox path: $normalizedPath');

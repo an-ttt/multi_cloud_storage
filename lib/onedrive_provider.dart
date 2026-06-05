@@ -80,7 +80,7 @@ class OneDriveProvider extends CloudStorageProvider {
       );
       provider._storageKeyPrefix = storageKeyPrefix;
       final effectiveScopes = scopes ??
-          "${MultiCloudStorage.cloudAccess == CloudAccessType.appStorage ? 'Files.ReadWrite.AppFolder' : 'Files.ReadWrite.All'} offline_access User.Read Sites.ReadWrite.All";
+          "Files.ReadWrite.All Files.ReadWrite.AppFolder offline_access User.Read Sites.ReadWrite.All";
       await provider._authenticate(effectiveScopes);
       provider._isAuthenticated = true;
       return provider;
@@ -475,6 +475,7 @@ class OneDriveProvider extends CloudStorageProvider {
     String path = '',
     required bool isPath,
     bool recursive = false,
+    CloudAccessType? cloudAccess,
   }) {
     return _executeRequest(
       () async {
@@ -491,7 +492,7 @@ class OneDriveProvider extends CloudStorageProvider {
             url = _buildItemUrl(effectivePath, '/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType');
           } else {
             final encodedPath = _encodePath(effectivePath);
-            url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
+            url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath/children?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
           }
           final response = await _dio.get(url);
           final List<dynamic> items = response.data['value'];
@@ -503,7 +504,7 @@ class OneDriveProvider extends CloudStorageProvider {
           for (final cf in cloudFiles) {
             if (cf.isDirectory) {
               // 🎯 递归时使用 item ID 而非路径字符串，避免重复解析路径为 ID
-              subFolderFiles.addAll(await listFiles(path: cf.id ?? cf.path, isPath: cf.id != null ? false : true, recursive: true));
+              subFolderFiles.addAll(await listFiles(path: cf.id ?? cf.path, isPath: cf.id != null ? false : true, recursive: true, cloudAccess: cloudAccess));
             }
           }
           cloudFiles.addAll(subFolderFiles);
@@ -537,6 +538,7 @@ class OneDriveProvider extends CloudStorageProvider {
     required String remotePath,
     required String localPath,
     required bool isPath,
+    CloudAccessType? cloudAccess,
   }) {
     return _executeRequest(
       () async {
@@ -545,7 +547,7 @@ class OneDriveProvider extends CloudStorageProvider {
           url = _buildItemUrl(remotePath, '/content');
         } else {
           final encodedPath = _encodePath(remotePath);
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+          url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath:/content';
         }
         await _dio.download(
           url,
@@ -568,6 +570,7 @@ class OneDriveProvider extends CloudStorageProvider {
     required String remotePath,
     required bool isPath,
     Map<String, dynamic>? metadata,
+    CloudAccessType? cloudAccess,
   }) {
     return _executeRequest(
       () async {
@@ -582,7 +585,7 @@ class OneDriveProvider extends CloudStorageProvider {
             url = _buildItemUrl(remotePath, '/content');
           } else {
             final encodedPath = _encodePath(remotePath);
-            url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+            url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath:/content';
           }
           await _dio.put(
             url,
@@ -602,7 +605,7 @@ class OneDriveProvider extends CloudStorageProvider {
             createSessionUrl = _buildItemUrl(remotePath, '/createUploadSession');
           } else {
             final encodedPath = _encodePath(remotePath);
-            createSessionUrl = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createUploadSession';
+            createSessionUrl = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath:/createUploadSession';
           }
           final sessionResponse = await _dio.post(
             createSessionUrl,
@@ -674,7 +677,7 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<void> deleteFile(String path, {required bool isPath}) {
+  Future<void> deleteFile(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     return _executeRequest(
       () async {
         final String url;
@@ -682,7 +685,7 @@ class OneDriveProvider extends CloudStorageProvider {
           url = _buildItemUrl(path, '');
         } else {
           final encodedPath = _encodePath(path);
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath';
+          url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath';
         }
         await _dio.delete(
           url,
@@ -693,7 +696,7 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<void> createDirectory(String path, {required bool isPath}) {
+  Future<void> createDirectory(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     return _executeRequest(
       () async {
         // createDirectory 语义上只接受路径，isPath=false 时传入的是 item ID，语义矛盾
@@ -704,13 +707,13 @@ class OneDriveProvider extends CloudStorageProvider {
         final dirName = path.split('/').last;
         String url;
         if (parentPath.isEmpty) {
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root/children';
+          url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/children';
         } else if (!isPath) {
           // 🎯 父路径是 item ID，使用 ID-based URL
           url = _buildItemUrl(parentPath, '/children');
         } else {
           final encodedParentPath = _encodePath(parentPath);
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedParentPath/children';
+          url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedParentPath/children';
         }
         await _dio.post(
           url,
@@ -727,7 +730,7 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<CloudFile> getFileMetadata(String path, {required bool isPath}) {
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     return _executeRequest(
       () async {
         final String url;
@@ -735,7 +738,7 @@ class OneDriveProvider extends CloudStorageProvider {
           url = _buildItemUrl(path, '?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType');
         } else {
           final encodedPath = _encodePath(path);
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
+          url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath?\$select=id,name,size,lastModifiedDateTime,folder,file,mimeType';
         }
         final response = await _dio.get(
           url,
@@ -769,6 +772,7 @@ class OneDriveProvider extends CloudStorageProvider {
     required bool isPath,
     required int offset,
     required int length,
+    CloudAccessType? cloudAccess,
   }) {
     return _executeRequest(() async {
       final String url;
@@ -776,7 +780,7 @@ class OneDriveProvider extends CloudStorageProvider {
         url = _buildItemUrl(path, '/content');
       } else {
         final encodedPath = _encodePath(path);
-        url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/content';
+        url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath:/content';
       }
       final response = await _dio.get(
         url,
@@ -792,14 +796,14 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<String?> getDownloadUrl(String path, {required bool isPath}) {
+  Future<String?> getDownloadUrl(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     return _executeRequest(() async {
       final String url;
       if (!isPath) {
         url = _buildItemUrl(path, '?\$select=@content.downloadUrl');
       } else {
         final encodedPath = _encodePath(path);
-        url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath?\$select=@content.downloadUrl';
+        url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath?\$select=@content.downloadUrl';
       }
       final response = await _dio.get(
         url,
@@ -930,16 +934,19 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   @override
-  Future<Uri?> generateShareLink(String path, {required bool isPath}) {
+  Future<Uri?> generateShareLink(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     return _executeRequest(
       () async {
+        if (_effectiveCloudAccess(cloudAccess) == CloudAccessType.appStorage) {
+          throw UnsupportedError('Sharing is not supported for AppFolder items');
+        }
         final String url;
         if (!isPath) {
           // 🎯 使用 item ID 直接创建共享链接
           url = _buildItemUrl(path, '/createLink');
         } else {
           final encodedPath = Uri.encodeComponent(path.startsWith('/') ? path.substring(1) : path);
-          url = 'https://graph.microsoft.com/v1.0/me/drive/root:/$encodedPath:/createLink';
+          url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/$encodedPath:/createLink';
         }
         final response = await _dio.post(
           url,
@@ -1071,6 +1078,16 @@ class OneDriveProvider extends CloudStorageProvider {
     // M-22 fix: 去除 base64url 填充字符 '='，Graph API 要求无填充的 base64url 编码
     final base64UrlString = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
     return 'u!$base64UrlString';
+  }
+
+  CloudAccessType _effectiveCloudAccess(CloudAccessType? cloudAccess) {
+    return cloudAccess ?? MultiCloudStorage.cloudAccess;
+  }
+
+  String _getBasePath(CloudAccessType? cloudAccess) {
+    return _effectiveCloudAccess(cloudAccess) == CloudAccessType.appStorage
+        ? 'me/drive/special/approot'
+        : 'me/drive/root';
   }
 
   String _encodePath(String path) {

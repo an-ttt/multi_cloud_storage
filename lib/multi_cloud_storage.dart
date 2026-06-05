@@ -77,7 +77,6 @@ class MultiCloudStorage {
     List<String>? scopes,
   }) async {
     try {
-      cloudAccess = CloudAccessType.fullAccess;
       final provider = await connectToGoogleDrive(
         serverClientId: serverClientId,
         clientSecret: clientSecret,

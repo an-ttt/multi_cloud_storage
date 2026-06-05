@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'multi_cloud_storage.dart' show CloudAccessType;
+
 abstract class CloudStorageProvider {
   /// Lists all files and directories at the specified [path].
   /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
@@ -7,6 +9,7 @@ abstract class CloudStorageProvider {
     required String path,
     required bool isPath,
     bool recursive = false,
+    CloudAccessType? cloudAccess,
   });
 
   /// Downloads a file from a [remotePath] to a [localPath] on the device.
@@ -15,6 +18,7 @@ abstract class CloudStorageProvider {
     required String remotePath,
     required String localPath,
     required bool isPath,
+    CloudAccessType? cloudAccess,
   });
 
   /// Uploads a file from [localPath] to a [remotePath] in the cloud.
@@ -24,6 +28,7 @@ abstract class CloudStorageProvider {
     required String remotePath,
     required bool isPath,
     Map<String, dynamic>? metadata,
+    CloudAccessType? cloudAccess,
   });
 
   // 🎯 直接用 parentId + fileName 上传文件，避免拼接路径字符串后重新解析
@@ -35,22 +40,23 @@ abstract class CloudStorageProvider {
     required String parentId,
     required String fileName,
     Map<String, dynamic>? metadata,
+    CloudAccessType? cloudAccess,
   }) async {
     final remotePath = '$parentId/$fileName';
-    return uploadFile(localPath: localPath, remotePath: remotePath, isPath: false, metadata: metadata);
+    return uploadFile(localPath: localPath, remotePath: remotePath, isPath: false, metadata: metadata, cloudAccess: cloudAccess);
   }
 
   /// Deletes the file or directory at the specified [path].
   /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
-  Future<void> deleteFile(String path, {required bool isPath});
+  Future<void> deleteFile(String path, {required bool isPath, CloudAccessType? cloudAccess});
 
   /// Creates a new directory at the specified [path].
   /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
-  Future<void> createDirectory(String path, {required bool isPath});
+  Future<void> createDirectory(String path, {required bool isPath, CloudAccessType? cloudAccess});
 
   /// Retrieves metadata for the file or directory at the specified [path].
   /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
-  Future<CloudFile> getFileMetadata(String path, {required bool isPath});
+  Future<CloudFile> getFileMetadata(String path, {required bool isPath, CloudAccessType? cloudAccess});
 
   /// Retrieves the display name of the currently logged-in user.
   Future<String?> loggedInUserDisplayName();
@@ -70,7 +76,7 @@ abstract class CloudStorageProvider {
 
   /// Generates a shareable link for the file or directory at the [path].
   /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
-  Future<Uri?> generateShareLink(String path, {required bool isPath});
+  Future<Uri?> generateShareLink(String path, {required bool isPath, CloudAccessType? cloudAccess});
 
   /// Extracts a share token from a given [shareLink].
   Future<String?> getShareTokenFromShareLink(Uri shareLink);
@@ -92,10 +98,11 @@ abstract class CloudStorageProvider {
     required bool isPath,
     required int offset,
     required int length,
+    CloudAccessType? cloudAccess,
   });
 
   /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
-  Future<String?> getDownloadUrl(String path, {required bool isPath});
+  Future<String?> getDownloadUrl(String path, {required bool isPath, CloudAccessType? cloudAccess});
 
   Future<String?> getAccessToken();
 
