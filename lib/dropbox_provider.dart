@@ -766,21 +766,9 @@ class DropboxProvider extends CloudStorageProvider {
           httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
         );
       } else {
-        // 🎯 移动端：传入 FlutterWebAuth2Options 解决 Android AuthTabIntent 兼容性问题：
-        // 1. preferEphemeral: false → 共享浏览器会话，使 Google 等第三方登录
-        //    能识别已登录的账号，避免每次重新输入。
-        //    多账号切换通过授权 URL 中的 force_login + force_reauthentication 参数实现：
-        //    - force_login: true → 强制显示登录页面，不自动跳转
-        //    - force_reauthentication: true → 强制重新输入凭据，跳过 "Continue as" 快捷按钮
-        //    （OneDrive 使用 prompt=select_account 参数，在共享 Cookie 下也能强制账号选择）
-        // 2. customTabsPackageOrder → 优先使用 Chrome，避免 Edge AuthTabIntent 问题
-        //    Chrome 对 AuthTabIntent 支持完善
-        // 参考：https://github.com/ThexXTURBOXx/flutter_web_auth_2/issues/158
+        // 🎯 移动端也使用 WebView，避免 App 进入后台导致同步暂停
         options = FlutterWebAuth2Options(
-          preferEphemeral: false,
-          customTabsPackageOrder: Platform.isAndroid
-              ? ['com.android.chrome']
-              : null,
+          useWebview: true,
         );
       }
       // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截自定义 scheme 回调，
