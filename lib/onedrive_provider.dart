@@ -230,15 +230,13 @@ class OneDriveProvider extends CloudStorageProvider {
     _pkceCodeVerifier = _generateCodeVerifier();
     _state = _generateState();
 
-    // 🎯 Android 端使用自定义 Scheme 回调（msal{clientId}://auth），
-    //    避免 Auth Tab 的 https 回调拦截不可靠问题
-    // 自定义 Scheme 通过 Android Intent 系统路由到 CallbackActivity，
-    // 不依赖 Auth Tab 的 ActivityResultLauncher 连接
+    // 🎯 Windows 端使用动态端口绑定，避免自定义 scheme 问题和端口冲突
     String effectiveRedirectUri;
     String callbackScheme;
-    if (isAndroid) {
-      effectiveRedirectUri = 'msal$clientId://auth';
-      callbackScheme = 'msal$clientId';
+    if (isWindows) {
+      final port = await _findAvailablePort();
+      effectiveRedirectUri = 'http://localhost:$port/callback';
+      callbackScheme = 'http';
     } else {
       effectiveRedirectUri = redirectUri;
       callbackScheme = effectiveRedirectUri.split('://')[0];
@@ -257,25 +255,19 @@ class OneDriveProvider extends CloudStorageProvider {
     });
     FlutterWebAuth2Options options;
     if (isWindows) {
-      final redirectUriParsed = Uri.parse(redirectUri);
-      if (redirectUriParsed.scheme == 'https' || redirectUriParsed.scheme == 'http') {
-        options = FlutterWebAuth2Options(
-          useWebview: true,
-          httpsHost: redirectUriParsed.host,
-          httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
-        );
-      } else {
-        options = FlutterWebAuth2Options(
-          useWebview: true,
-        );
-      }
+      final redirectUriParsed = Uri.parse(effectiveRedirectUri);
+      options = FlutterWebAuth2Options(
+        useWebview: true,
+        httpsHost: redirectUriParsed.host,
+        httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
+      );
     } else if (isAndroid) {
       // 🎯 Android: 使用 WebView，避免 App 进入后台导致同步暂停
       options = FlutterWebAuth2Options(
         useWebview: true,
       );
     } else if (callbackScheme == 'https' || callbackScheme == 'http') {
-      // iOS: https 回调，使用 WebView 避免进入后台
+      // macOS/iOS: https 回调，使用 WebView 避免进入后台
       final redirectUriParsed = Uri.parse(effectiveRedirectUri);
       options = FlutterWebAuth2Options(
         useWebview: true,
@@ -283,7 +275,7 @@ class OneDriveProvider extends CloudStorageProvider {
         httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
       );
     } else {
-      // iOS: 自定义 Scheme 回调，使用 WebView 避免进入后台
+      // macOS/iOS: 自定义 Scheme 回调，使用 WebView 避免进入后台
       options = FlutterWebAuth2Options(
         useWebview: true,
       );
@@ -1122,6 +1114,14 @@ class OneDriveProvider extends CloudStorageProvider {
     final random = Random.secure();
     final bytes = List<int>.generate(32, (_) => random.nextInt(256));
     return base64Url.encode(bytes).replaceAll('=', '');
+  }
+
+  // 🎯 Windows 端获取动态端口，使用 OS 自动分配避免端口冲突
+  Future<int> _findAvailablePort() async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final port = server.port;
+    await server.close();
+    return port;
   }
 }
 
