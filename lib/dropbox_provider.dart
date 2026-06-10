@@ -38,12 +38,17 @@ class DropboxProvider extends CloudStorageProvider {
   final Duration _sendTimeout;
   final Duration _receiveTimeout;
 
-  // 🎯 桌面端（Windows/Linux）使用 http://localhost 作为 redirect URI
-  // 原因：flutter_web_auth_2 在桌面端默认使用 WebView（useWebview: true），
-  // WebView 只能拦截 http/https 导航，自定义 scheme（如 example://）无法被拦截。
-  // Dropbox 允许 localhost URI 无需预注册，且支持 HTTP scheme。
+  // 🎯 桌面端（Windows/Linux）OAuth 回调策略：
+  // 使用 flutter_web_auth_2 的 Server 实现（useWebview: false），在本地启动 HTTP 服务器
+  // 接收回调，而非依赖 WebView 的 NavigationStarting 拦截机制。
+  // 原因：WebView 拦截在匹配 URL 后返回 true，导致原生端重新导航到
+  // http://localhost?code=xxx，因无服务器监听而显示 404 错误。
+  // Server 实现通过实际监听端口接收回调，更可靠。
   // 参考：RFC 8252 §8.3（Loopback Redirect），Dropbox OAuth 文档
+  String? _currentRedirectUri;
+
   String get _effectiveRedirectUri {
+    if (_currentRedirectUri != null) return _currentRedirectUri!;
     if (Platform.isWindows || Platform.isLinux) {
       return 'http://localhost';
     }
@@ -760,22 +765,29 @@ class DropboxProvider extends CloudStorageProvider {
 
   /// Manages the interactive OAuth2 flow using a web view and app links.
   Future<String?> _getAuthCodeViaInteractiveFlow() async {
+    final isDesktop = Platform.isWindows || Platform.isLinux;
+
+    // 🎯 桌面端：分配动态端口，使用 Server 实现（useWebview: false）
+    // Server 实现启动本地 HTTP 服务器接收回调，比 WebView 拦截更可靠。
+    // Dropbox 允许 localhost URI 使用任意端口（RFC 8252 §8.3）。
+    if (isDesktop) {
+      final port = await _findAvailablePort();
+      _currentRedirectUri = 'http://localhost:$port';
+    } else {
+      _currentRedirectUri = null;
+    }
+
     final authUrl = _getAuthorizationUrl();
     final effectiveRedirect = _effectiveRedirectUri;
-    final callbackScheme = effectiveRedirect.split('://')[0];
     debugPrint('Launching Dropbox authorization URL: $authUrl');
     try {
-      final isDesktop = Platform.isWindows || Platform.isLinux;
       FlutterWebAuth2Options options;
       if (isDesktop) {
-        // 🎯 桌面端（Windows/Linux）：使用 WebView + http://localhost 回调
-        // WebView 拦截导航到 localhost 的请求，提取授权码
-        // 参考：RFC 8252 §8.3（Loopback Redirect）
-        final redirectUriParsed = Uri.parse(effectiveRedirect);
+        // 🎯 桌面端（Windows/Linux）：使用 Server 实现
+        // callbackUrlScheme 必须为 http://localhost:{port} 格式，
+        // Server 实现会在此端口启动 HTTP 服务器接收 OAuth 回调。
         options = FlutterWebAuth2Options(
-          useWebview: true,
-          httpsHost: redirectUriParsed.host,
-          httpsPath: redirectUriParsed.path.isEmpty ? '/' : redirectUriParsed.path,
+          useWebview: false,
         );
       } else {
         // 🎯 移动端也使用 WebView，避免 App 进入后台导致同步暂停
@@ -783,6 +795,9 @@ class DropboxProvider extends CloudStorageProvider {
           useWebview: true,
         );
       }
+      // 🎯 桌面端 Server 实现要求 callbackUrlScheme 为 http://localhost:{port} 格式，
+      // 移动端 WebView 实现要求 callbackUrlScheme 为 URL scheme（如 com.foxmomo.music）。
+      final callbackScheme = isDesktop ? effectiveRedirect : effectiveRedirect.split('://')[0];
       // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截自定义 scheme 回调，
       // 导致 FlutterWebAuth2.authenticate() 的 Future 永远不会 resolve。
       // 超时后由 _cleanUpDanglingCalls 机制清理挂起的回调。
@@ -818,6 +833,9 @@ class DropboxProvider extends CloudStorageProvider {
     } catch (e) {
       debugPrint('Dropbox interactive auth error: $e');
       return null;
+    } finally {
+      // 清理桌面端临时 redirect URI
+      _currentRedirectUri = null;
     }
   }
 
@@ -971,6 +989,14 @@ class DropboxProvider extends CloudStorageProvider {
     final random = Random.secure();
     final bytes = List<int>.generate(32, (_) => random.nextInt(256));
     return base64Url.encode(bytes).replaceAll('=', '');
+  }
+
+  /// 🎯 桌面端获取动态端口，使用 OS 自动分配避免端口冲突
+  Future<int> _findAvailablePort() async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final port = server.port;
+    await server.close();
+    return port;
   }
 
   // 🎯 静态方法：清除默认 key 下的残留 token，确保新建账户时走交互式 OAuth 流程
