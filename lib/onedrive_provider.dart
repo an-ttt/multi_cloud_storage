@@ -26,6 +26,12 @@ class OneDriveProvider extends CloudStorageProvider {
   String? _pkceCodeVerifier;
   String? _state;
 
+  // 🎯 桌面端（Windows/Linux）OAuth 回调策略：
+  // 使用 flutter_web_auth_2 的 Server 实现（useWebview: false），在本地启动 HTTP 服务器
+  // 接收回调，而非依赖 WebView 的 NavigationStarting 拦截机制。
+  // 参考：RFC 8252 §8.3（Loopback Redirect）
+  String? _currentRedirectUri;
+
   // DIO 超时配置
   final Duration _connectTimeout;
   final Duration _sendTimeout;
@@ -230,14 +236,17 @@ class OneDriveProvider extends CloudStorageProvider {
     _pkceCodeVerifier = _generateCodeVerifier();
     _state = _generateState();
 
-    // 🎯 桌面端使用 http://localhost/callback 作为 redirect URI
-    // Microsoft OAuth 服务器在匹配 localhost URI 时自动忽略端口（RFC 8252 §8.3），
-    // 无需动态端口，使用固定 URI 即可。WebView 拦截导航到 localhost/callback 的请求。
+    try {
+    // 🎯 桌面端：分配动态端口，使用 Server 实现（useWebview: false）
+    // Server 实现启动本地 HTTP 服务器接收回调，比 WebView 拦截更可靠。
+    // Microsoft OAuth 服务器允许 localhost URI 使用任意端口（RFC 8252 §8.3）。
     String effectiveRedirectUri;
     String callbackScheme;
     if (isDesktop) {
-      effectiveRedirectUri = 'http://localhost/callback';
-      callbackScheme = 'http';
+      final port = await _findAvailablePort();
+      _currentRedirectUri = 'http://localhost:$port';
+      effectiveRedirectUri = _currentRedirectUri!;
+      callbackScheme = effectiveRedirectUri;
     } else {
       effectiveRedirectUri = redirectUri;
       callbackScheme = effectiveRedirectUri.split('://')[0];
@@ -256,14 +265,11 @@ class OneDriveProvider extends CloudStorageProvider {
     });
     FlutterWebAuth2Options options;
     if (isDesktop) {
-      final redirectUriParsed = Uri.parse(effectiveRedirectUri);
+      // 🎯 桌面端（Windows/Linux）：使用 Server 实现
+      // callbackUrlScheme 必须为 http://localhost:{port} 格式，
+      // Server 实现会在此端口启动 HTTP 服务器接收 OAuth 回调。
       options = FlutterWebAuth2Options(
         useWebview: false,
-        httpsHost: redirectUriParsed.host,
-        // 当 redirect URI 无路径时（如 http://localhost），httpsPath 必须设为 null，
-        // 因为 OAuth 重定向到 http://localhost?code=xxx 时 uri.path 为 ''（空字符串），
-        // 而 '' != '/' 会导致 WebView 拦截失败。
-        httpsPath: redirectUriParsed.path.isEmpty ? null : redirectUriParsed.path,
       );
     } else if (isAndroid) {
       // 🎯 Android: 使用 WebView，避免 App 进入后台导致同步暂停
@@ -310,6 +316,10 @@ class OneDriveProvider extends CloudStorageProvider {
     await _exchangeCodeForToken(code, scopes, effectiveRedirectUri);
     _pkceCodeVerifier = null;
     _state = null;
+    } finally {
+      // 清理桌面端临时 redirect URI
+      _currentRedirectUri = null;
+    }
   }
 
   // M-21 fix: 使用 Dio 替代 http 包，统一超时配置
@@ -1128,6 +1138,14 @@ class OneDriveProvider extends CloudStorageProvider {
     final random = Random.secure();
     final bytes = List<int>.generate(32, (_) => random.nextInt(256));
     return base64Url.encode(bytes).replaceAll('=', '');
+  }
+
+  /// 🎯 桌面端获取动态端口，使用 OS 自动分配避免端口冲突
+  Future<int> _findAvailablePort() async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final port = server.port;
+    await server.close();
+    return port;
   }
 }
 
