@@ -248,7 +248,7 @@ class OneDriveProvider extends CloudStorageProvider {
       'response_type': 'code',
       'scope': scopes,
       'prompt': 'select_account',
-      'response_mode': 'query',
+      'response_mode': 'form_post',
       'state': _state,
       'code_challenge_method': 'S256',
       'code_challenge': _generateCodeChallengeS256(_pkceCodeVerifier!),
@@ -294,14 +294,15 @@ class OneDriveProvider extends CloudStorageProvider {
       },
     );
     final resultUri = Uri.parse(result);
-    // 验证 state 参数防止 CSRF 攻击
+    // 🎯 兼容 form_post 和 query 两种 response_mode
     final returnedState = resultUri.queryParameters['state'];
+    final code = resultUri.queryParameters['code'];
+    if (code == null || returnedState == null) {
+      throw Exception('Authorization code or state not found in callback');
+    }
+    // 验证 state 参数防止 CSRF 攻击
     if (returnedState != _state) {
       throw Exception('OAuth state mismatch - possible CSRF attack');
-    }
-    final code = resultUri.queryParameters['code'];
-    if (code == null) {
-      throw Exception('Authorization code not found');
     }
     await _exchangeCodeForToken(code, scopes, effectiveRedirectUri);
     _pkceCodeVerifier = null;
