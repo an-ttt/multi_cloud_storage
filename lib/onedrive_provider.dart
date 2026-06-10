@@ -230,12 +230,13 @@ class OneDriveProvider extends CloudStorageProvider {
     _pkceCodeVerifier = _generateCodeVerifier();
     _state = _generateState();
 
-    // 🎯 桌面端使用动态端口绑定，避免自定义 scheme 问题和端口冲突
+    // 🎯 桌面端使用 http://localhost/callback 作为 redirect URI
+    // Microsoft OAuth 服务器在匹配 localhost URI 时自动忽略端口（RFC 8252 §8.3），
+    // 无需动态端口，使用固定 URI 即可。WebView 拦截导航到 localhost/callback 的请求。
     String effectiveRedirectUri;
     String callbackScheme;
     if (isDesktop) {
-      final port = await _findAvailablePort();
-      effectiveRedirectUri = 'http://localhost:$port/callback';
+      effectiveRedirectUri = 'http://localhost/callback';
       callbackScheme = 'http';
     } else {
       effectiveRedirectUri = redirectUri;
@@ -1125,14 +1126,6 @@ class OneDriveProvider extends CloudStorageProvider {
     final random = Random.secure();
     final bytes = List<int>.generate(32, (_) => random.nextInt(256));
     return base64Url.encode(bytes).replaceAll('=', '');
-  }
-
-  // 🎯 Windows 端获取动态端口，使用 OS 自动分配避免端口冲突
-  Future<int> _findAvailablePort() async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final port = server.port;
-    await server.close();
-    return port;
   }
 }
 
