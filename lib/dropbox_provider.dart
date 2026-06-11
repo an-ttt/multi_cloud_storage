@@ -49,9 +49,7 @@ class DropboxProvider extends CloudStorageProvider {
 
   String get _effectiveRedirectUri {
     if (_currentRedirectUri != null) return _currentRedirectUri!;
-    if (Platform.isWindows || Platform.isLinux) {
-      return 'http://localhost';
-    }
+
     return _redirectUri;
   }
 
@@ -796,7 +794,7 @@ class DropboxProvider extends CloudStorageProvider {
         );
       }
       // 🎯 桌面端 Server 实现要求 callbackUrlScheme 为 http://localhost:{port} 格式，
-      // 移动端 WebView 实现要求 callbackUrlScheme 为 URL scheme（如 com.foxmomo.music）。
+      // 移动端 WebView 实现要求 callbackUrlScheme 为 URL scheme（如 com.example.music）。
       final callbackScheme = isDesktop ? effectiveRedirect : effectiveRedirect.split('://')[0];
       // 添加超时保护：AuthTabIntent 在部分设备上无法正确拦截自定义 scheme 回调，
       // 导致 FlutterWebAuth2.authenticate() 的 Future 永远不会 resolve。
