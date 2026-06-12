@@ -131,16 +131,21 @@ class GoogleDriveProvider extends CloudStorageProvider {
           return null;
         }
       }
-      // 🎯 v7+ 优化：attemptLightweightAuthentication() 成功时直接使用返回的 account，
-      // 跳过 authenticate()，避免 Android 上两次 UI 闪烁（轻量级提示 + 完整登录界面）
-      // lightweightAccount 已通过 SDK 验证，后续 authorizeScopes() 会确保 scope 授权
-      // 仅在 lightweightAccount 为 null（无缓存账户）时才调用 authenticate()
-      // 前置检查 supportsAuthenticate()：v7+ 推荐先确认平台支持 authenticate()
-      // 不支持时（如 Web 端）回退到 lightweightAccount + authorizeScopes()
-      if (lightweightAccount == null && forceInteractive && !silentOnly && GoogleSignIn.instance.supportsAuthenticate()) {
+      debugPrint('Google Drive: attemptLightweightAuthentication returned ${lightweightAccount != null ? 'account (${lightweightAccount.email})' : 'null'}');
+      // 🎯 forceInteractive=true 时始终调用 authenticate()，确保弹出 Google Sign-In UI
+      // 修复：signOut() 后 attemptLightweightAuthentication() 可能仍返回缓存账户，
+      // 导致跳过 authenticate() 而直接使用过期账户，authorizeScopes() 挂起不弹窗
+      if (forceInteractive && !silentOnly && GoogleSignIn.instance.supportsAuthenticate()) {
         try {
+          debugPrint('Google Drive: calling authenticate() to show Google Sign-In UI');
+          // 🎯 authenticate() 单步超时：防止 Google Play Services 异常导致 Future 永久挂起
           account = await GoogleSignIn.instance
-              .authenticate(scopeHint: GoogleDriveProvider.scopes);
+              .authenticate(scopeHint: GoogleDriveProvider.scopes)
+              .timeout(const Duration(seconds: 60), onTimeout: () {
+            debugPrint('Google Drive: authenticate() timed out after 60s');
+            throw TimeoutException('Google Sign-In authenticate timed out');
+          });
+          debugPrint('Google Drive: authenticate() returned account (${account.email})');
         } on GoogleSignInException catch (e) {
           debugPrint('Google Sign-In authenticate error: $e');
           if (e.code == GoogleSignInExceptionCode.canceled) {
@@ -165,6 +170,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
               rethrow;
             }
           }
+        } on TimeoutException {
+          // 🎯 authenticate() 超时：如果有 lightweightAccount 则回退
+          if (lightweightAccount != null) {
+            debugPrint('Google Drive: authenticate timed out, falling back to lightweightAccount');
+            account = lightweightAccount;
+          } else {
+            rethrow;
+          }
         }
       } else {
         // 🎯 非 forceInteractive 模式，或平台不支持 authenticate()：
@@ -176,8 +189,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
       }
       GoogleSignInClientAuthorization authorization;
       try {
+        debugPrint('Google Drive: calling authorizeScopes() for account ${account.email}');
         authorization = await account.authorizationClient
             .authorizeScopes(GoogleDriveProvider.scopes);
+        debugPrint('Google Drive: authorizeScopes() succeeded');
       } on GoogleSignInException catch (e) {
         debugPrint('Google Drive scope authorization error: $e');
         if (e.code == GoogleSignInExceptionCode.canceled) {
