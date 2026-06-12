@@ -62,14 +62,14 @@ class MultiCloudStorage {
 
   // 🎯 Google Drive SDK 静态登出：清理 SDK 缓存的登录状态
   /// Google Drive 凭据验证：使用 connectToGoogleDrive(silentOnly: true) 恢复凭据
-  /// silentOnly 模式下：先尝试 attemptLightweightAuthentication()（含重试），
-  /// 失败则返回 null 而非弹出 authenticate() UI
+  /// silentOnly 模式下：先尝试 signInSilently()（含重试），
+  /// 失败则返回 null 而非弹出 signIn() UI
   ///
   /// 移除了原有的 verifySilentLogin() 预检查，因为：
-  /// 1. connect() 内部已包含 attemptLightweightAuthentication() 调用，预检查冗余
-  /// 2. 预检查失败后直接放弃，导致安卓端重启后无法恢复（attemptLightweightAuthentication
+  /// 1. connect() 内部已包含 signInSilently() 调用，预检查冗余
+  /// 2. 预检查失败后直接放弃，导致安卓端重启后无法恢复（signInSilently
   ///    在应用进程重启后可能返回 null，但 connect() 内部的重试逻辑可能成功）
-  /// 3. 预检查和 connect() 分别调用 attemptLightweightAuthentication()，
+  /// 3. 预检查和 connect() 分别调用 signInSilently()，
   ///    两次调用之间可能存在时序差异导致结果不同
   static Future<CloudStorageProvider?> validateGoogleDriveCredentials({
     String? serverClientId,

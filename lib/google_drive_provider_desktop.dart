@@ -85,9 +85,9 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       if (forceInteractive && !silentOnly) {
         credentials = await googleSignIn.signInOnline();
       } else {
-        // 🎯 非交互模式或 silentOnly 模式：仅尝试 lightweightSignIn，不 fallback 到 signInOnline
-        // 避免在凭据验证/恢复场景下意外打开浏览器
-        credentials = await googleSignIn.lightweightSignIn();
+        // 🎯 v1.2.1: 使用 signInOffline() 替代 lightweightSignIn()
+        // signInOffline() 从本地缓存读取 token，不弹出浏览器
+        credentials = await googleSignIn.signInOffline();
       }
 
       if (credentials == null) {
@@ -95,23 +95,15 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
         return null;
       }
 
-      // 🎯 预检凭据有效性：如果凭据已过期且没有 refresh_token，
-      // 直接返回 null 而不调用 authenticatedClient，
-      // 避免 authenticatedClient 内部的 signOut() 清除 SharedPreferences 中的凭据
-      final expiresIn = credentials.expiresIn;
-      final hasRefreshToken = credentials.refreshToken != null;
-      if (!hasRefreshToken && expiresIn != null &&
-          expiresIn.isBefore(DateTime.now().add(const Duration(minutes: 1)).toUtc())) {
-        debugPrint('Google Drive credentials expired without refresh token. Returning null to prevent signOut clearing storage.');
-        return null;
-      }
+      // 🎯 v1.2.1: GoogleSignInCredentials 没有 expiresIn 字段
+      // 如果有 refreshToken，SDK 会自动刷新；如果没有，后续 API 调用失败时会触发重试
 
       final client = await googleSignIn.authenticatedClient;
 
       if (client == null) {
         debugPrint('Failed to get authenticated Google client — token may be invalid or expired.');
         // 🎯 authenticatedClient 返回 null：凭据已失效，signOut 清除 SDK 缓存
-        // 避免后续 lightweightSignIn() 继续返回过期凭据导致循环重试
+        // 避免后续 signInOffline() 继续返回过期凭据导致循环重试
         try { await googleSignIn.signOut(); } catch (_) {}
         throw Exception('Google Drive authentication failed: unable to obtain authenticated client. The access token may be invalid or expired.');
       }
@@ -198,7 +190,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       if (userInfo != null) return true;
       // 🎯 _fetchUserInfo 返回 null：可能是 invalid_grant（refresh token 已失效）
       // 此时 SDK 缓存的凭据已不可用，必须 signOut 清除缓存，
-      // 否则后续 lightweightSignIn() 会继续返回过期凭据导致循环重试
+      // 否则后续 signInOffline() 会继续返回过期凭据导致循环重试
       debugPrint('Google Drive Desktop validateCredentials: _fetchUserInfo returned null, signing out to clear stale credentials');
       await signOut();
       return false;
@@ -238,12 +230,13 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     }
   }
 
-  // 🎯 桌面端通用方法：通过 silentSignIn() 静默刷新凭据并重建 DriveApi
+  // 🎯 桌面端通用方法：通过 signInOffline() 静默刷新凭据并重建 DriveApi
   // 提取自 handleAuthErrorAndRetry/refreshAccessToken/refreshAuthClient 三处重复逻辑
   // 返回 true 表示重建成功，false 表示失败
   Future<bool> _rebuildDriveApiDesktop() async {
     if (_googleSignIn == null) return false;
-    final credentials = await _googleSignIn!.silentSignIn();
+    // 🎯 v1.2.1: 使用 signInOffline() 替代 silentSignIn()
+    final credentials = await _googleSignIn!.signInOffline();
     if (credentials == null) return false;
     _accessToken = credentials.accessToken;
     final client = await _googleSignIn!.authenticatedClient;
@@ -269,12 +262,12 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     debugPrint('Authentication error occurred. Attempting to reconnect...');
     isAuthenticated = false;
     try {
-      // 🎯 使用 silentSignIn() 静默刷新凭据，避免在同步/播放过程中意外弹出浏览器
+      // 🎯 使用 signInOffline() 静默刷新凭据，避免在同步/播放过程中意外弹出浏览器
       // 仅在用户主动触发（如点击"重新登录"按钮）时才使用 signInOnline()
       final rebuilt = await _rebuildDriveApiDesktop();
       if (rebuilt) {
         isAuthenticated = true;
-        debugPrint('Successfully reconnected via silentSignIn. Retrying the original request.');
+        debugPrint('Successfully reconnected via signInOffline. Retrying the original request.');
         try {
           return await request();
         } on drive.DetailedApiRequestError catch (retryError) {
@@ -309,7 +302,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   Future<bool> refreshAccessToken() async {
     if (_googleSignIn == null) return false;
     try {
-      // M-14 fix: 使用 silentSignIn 避免弹出 UI 窗口
+      // M-14 fix: 使用 signInOffline 避免弹出 UI 窗口
       return await _rebuildDriveApiDesktop();
     } catch (e) {
       debugPrint('Google Drive Desktop token refresh failed: $e');
@@ -317,7 +310,7 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
     }
   }
 
-  // 🎯 桌面端重写：使用 _googleSignIn.silentSignIn() 刷新凭据并重建 driveApi
+  // 🎯 桌面端重写：使用 _googleSignIn.signInOffline() 刷新凭据并重建 driveApi
   // 父类 refreshAuthClient 使用 _currentAccount（移动端专用），桌面端 _currentAccount 为 null 导致方法空返回
   @override
   Future<void> refreshAuthClient() async {
