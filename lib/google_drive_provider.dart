@@ -135,6 +135,7 @@ class GoogleDriveProvider extends CloudStorageProvider {
       // 🎯 forceInteractive=true 时始终调用 authenticate()，确保弹出 Google Sign-In UI
       // 修复：signOut() 后 attemptLightweightAuthentication() 可能仍返回缓存账户，
       // 导致跳过 authenticate() 而直接使用过期账户，authorizeScopes() 挂起不弹窗
+      debugPrint('Google Drive: forceInteractive=$forceInteractive, silentOnly=$silentOnly, supportsAuthenticate=${GoogleSignIn.instance.supportsAuthenticate()}');
       if (forceInteractive && !silentOnly && GoogleSignIn.instance.supportsAuthenticate()) {
         try {
           debugPrint('Google Drive: calling authenticate() to show Google Sign-In UI');
@@ -191,7 +192,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
       try {
         debugPrint('Google Drive: calling authorizeScopes() for account ${account.email}');
         authorization = await account.authorizationClient
-            .authorizeScopes(GoogleDriveProvider.scopes);
+            .authorizeScopes(GoogleDriveProvider.scopes)
+            .timeout(const Duration(seconds: 30), onTimeout: () {
+          debugPrint('Google Drive: authorizeScopes() timed out after 30s');
+          throw TimeoutException('Google Drive authorizeScopes timed out');
+        });
         debugPrint('Google Drive: authorizeScopes() succeeded');
       } on GoogleSignInException catch (e) {
         debugPrint('Google Drive scope authorization error: $e');
@@ -199,6 +204,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
           return null;
         }
         rethrow;
+      } on TimeoutException catch (e) {
+        debugPrint('Google Drive authorizeScopes timeout: $e');
+        throw TimeoutException('Google Drive authorizeScopes timed out');
       }
       final client =
           authorization.authClient(scopes: GoogleDriveProvider.scopes);
@@ -657,10 +665,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
   // 🎯 静态登出方法：在 OAuth 前清理 SDK 缓存的登录状态，确保新用户可以登录
   static Future<void> signOutCurrent() async {
     try {
-      // 🎯 仅调用 signOut()，不调用 disconnect()
-      // disconnect() 会撤销应用对用户账户的访问权限（revoke grants），
-      // 导致重新 OAuth 时必须从头授权所有 scope，对重新登录场景过于激进
       await GoogleSignIn.instance.signOut();
+      _initialized = false;
+      _initializedServerClientId = null;
+      await _authEventsSubscription?.cancel();
+      _authEventsSubscription = null;
       debugPrint('Google Drive SDK signed out (static).');
     } catch (error) {
       debugPrint('Failed to sign out Google Drive SDK (static): $error');
