@@ -250,7 +250,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
               path: currentItemPath,
               name: file.name ?? 'Unnamed',
               size: file.size == null ? null : int.tryParse(file.size!),
-              modifiedTime: file.modifiedTime ?? DateTime.now(),
+              // 🎯 不使用 DateTime.now() 作为 fallback：当 modifiedTime 为 null 时保持 null，
+              // 让上层（_collectFolderSnapshot）用 -1 作为哨兵值，避免每次调用产生不同时间戳导致误判"有更新"
+              modifiedTime: file.modifiedTime,
               isDirectory:
                   file.mimeType == 'application/vnd.google-apps.folder',
               id: file.id,
@@ -417,7 +419,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
         path: path,
         name: file.name ?? 'Unnamed',
         size: file.size == null ? null : int.tryParse(file.size!),
-        modifiedTime: file.modifiedTime ?? DateTime.now(),
+        // 🎯 不使用 DateTime.now() 作为 fallback：当 modifiedTime 为 null 时保持 null，
+        // 让上层（_collectFolderSnapshot）用 -1 作为哨兵值，避免每次调用产生不同时间戳导致误判"有更新"
+        modifiedTime: file.modifiedTime,
         isDirectory: file.mimeType == 'application/vnd.google-apps.folder',
         id: file.id,
         mimeType: file.mimeType,

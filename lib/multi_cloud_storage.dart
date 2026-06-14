@@ -8,6 +8,7 @@ import 'package:multi_cloud_storage/icloud_provider.dart';
 import 'package:multi_cloud_storage/onedrive_provider.dart';
 
 import 'package:multi_cloud_storage/dropbox_provider.dart';
+export 'package:multi_cloud_storage/google_drive_scopes.dart';
 
 enum CloudStorageType { dropbox, oneDrive, googleDrive, icloud }
 
