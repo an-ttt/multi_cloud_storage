@@ -676,7 +676,7 @@ class DropboxProvider extends CloudStorageProvider {
           final retryCount = e.requestOptions.extra['dropbox_refresh_retry'] as int? ?? 0;
           if (retryCount >= 1) {
             debugPrint('Dropbox: 401 after refresh attempt, giving up.');
-            await logout();
+            _isAuthenticated = false;
             return handler.reject(e);
           }
           debugPrint(
@@ -699,8 +699,8 @@ class DropboxProvider extends CloudStorageProvider {
             );
             return handler.resolve(response);
           } catch (refreshError) {
-            debugPrint('Failed to refresh Dropbox token. Logging out.');
-            await logout();
+            debugPrint('Failed to refresh Dropbox token: $refreshError');
+            _isAuthenticated = false;
             return handler.reject(e);
           }
         }

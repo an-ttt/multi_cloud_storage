@@ -14,6 +14,10 @@ import 'exceptions/no_connection_exception.dart';
 import 'multi_cloud_storage.dart';
 
 class OneDriveProvider extends CloudStorageProvider {
+  // 🎯 Token 过期缓冲时间：Token 在实际过期前此时间段内即被视为过期，触发主动刷新
+  // 与 Dropbox 的 isExpired getter（5 分钟缓冲）保持一致
+  static const Duration _tokenExpiryBuffer = Duration(minutes: 5);
+
   final String clientId;
   final String redirectUri;
   bool _isAuthenticated = false;
@@ -177,7 +181,7 @@ class OneDriveProvider extends CloudStorageProvider {
         debugPrint('OneDrive loadFromStorage: token expiry parse failed, treating as expired.');
         provider._tokenExpiry = DateTime.fromMillisecondsSinceEpoch(0);
       }
-      if (provider._tokenExpiry != null && provider._tokenExpiry!.isBefore(DateTime.now())) {
+      if (provider._tokenExpiry != null && provider._tokenExpiry!.isBefore(DateTime.now().add(_tokenExpiryBuffer))) {
         if (provider._refreshToken != null) {
           try {
             await provider._refreshAccessToken();
@@ -211,7 +215,7 @@ class OneDriveProvider extends CloudStorageProvider {
     }
     if (_accessToken != null &&
         _tokenExpiry != null &&
-        _tokenExpiry!.isAfter(DateTime.now())) {
+        _tokenExpiry!.isAfter(DateTime.now().add(_tokenExpiryBuffer))) {
       debugPrint('OneDriveProvider: Using cached token');
       return;
     }
@@ -821,7 +825,7 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<String?> getAccessToken() async {
     if (_accessToken == null ||
-        (_tokenExpiry != null && _tokenExpiry!.isBefore(DateTime.now()))) {
+        (_tokenExpiry != null && _tokenExpiry!.isBefore(DateTime.now().add(_tokenExpiryBuffer)))) {
       if (_refreshToken != null) {
         try {
           await _refreshAccessToken();
@@ -899,7 +903,7 @@ class OneDriveProvider extends CloudStorageProvider {
   @override
   Future<bool> tokenExpired() async {
     if (!_isAuthenticated) return true;
-    if (_tokenExpiry != null && _tokenExpiry!.isBefore(DateTime.now())) {
+    if (_tokenExpiry != null && _tokenExpiry!.isBefore(DateTime.now().add(_tokenExpiryBuffer))) {
       return true;
     }
     try {
