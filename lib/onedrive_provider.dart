@@ -30,6 +30,10 @@ class OneDriveProvider extends CloudStorageProvider {
   String? _pkceCodeVerifier;
   String? _state;
 
+  // 🎯 刷新互斥锁：序列化所有 _refreshAccessToken() 调用，避免并发刷新导致
+  // refresh_token 轮转冲突（Microsoft 每次刷新会返回新的 refresh_token，旧的可能立即失效）
+  Completer<void>? _refreshCompleter;
+
   // 🎯 桌面端（Windows/Linux）OAuth 回调策略：
   // 使用 flutter_web_auth_2 的 Server 实现（useWebview: false），在本地启动 HTTP 服务器
   // 接收回调，而非依赖 WebView 的 NavigationStarting 拦截机制。
@@ -360,31 +364,45 @@ class OneDriveProvider extends CloudStorageProvider {
 
   // M-21 fix: 使用 Dio 替代 http 包，统一超时配置
   Future<void> _refreshAccessToken() async {
-    if (_refreshToken == null) {
-      throw Exception('No refresh token available');
+    // 🎯 互斥锁：若已有刷新在进行，等待其结果，避免并发刷新导致 refresh_token 轮转冲突
+    // Microsoft 每次刷新会返回新的 refresh_token，并发刷新会使其中一个使用已失效的旧 token
+    if (_refreshCompleter != null && !_refreshCompleter!.isCompleted) {
+      return _refreshCompleter!.future;
     }
-    final dioForToken = Dio(BaseOptions(
-      connectTimeout: _connectTimeout,
-      sendTimeout: _sendTimeout,
-      receiveTimeout: _receiveTimeout,
-    ));
-    final response = await dioForToken.post(
-      'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-      data: {
-        'client_id': clientId,
-        'grant_type': 'refresh_token',
-        'refresh_token': _refreshToken,
-      },
-      options: Options(contentType: 'application/x-www-form-urlencoded'),
-    );
-    if (response.statusCode != 200) {
-      throw Exception('Token refresh failed: ${response.data}');
+    _refreshCompleter = Completer<void>();
+    try {
+      if (_refreshToken == null) {
+        throw Exception('No refresh token available');
+      }
+      final dioForToken = Dio(BaseOptions(
+        connectTimeout: _connectTimeout,
+        sendTimeout: _sendTimeout,
+        receiveTimeout: _receiveTimeout,
+      ));
+      final response = await dioForToken.post(
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+        data: {
+          'client_id': clientId,
+          'grant_type': 'refresh_token',
+          'refresh_token': _refreshToken,
+        },
+        options: Options(contentType: 'application/x-www-form-urlencoded'),
+      );
+      if (response.statusCode != 200) {
+        throw Exception('Token refresh failed: ${response.data}');
+      }
+      final json = response.data;
+      _accessToken = json['access_token'] as String;
+      _refreshToken = json['refresh_token'] as String? ?? _refreshToken;
+      _tokenExpiry = DateTime.now().add(Duration(seconds: json['expires_in'] as int));
+      await _saveTokens();
+      _refreshCompleter!.complete();
+    } catch (e) {
+      _refreshCompleter!.completeError(e);
+      rethrow;
+    } finally {
+      _refreshCompleter = null;
     }
-    final json = response.data;
-    _accessToken = json['access_token'] as String;
-    _refreshToken = json['refresh_token'] as String? ?? _refreshToken;
-    _tokenExpiry = DateTime.now().add(Duration(seconds: json['expires_in'] as int));
-    await _saveTokens();
   }
 
   void _initializeDio() {
@@ -1032,7 +1050,7 @@ class OneDriveProvider extends CloudStorageProvider {
     Future<T> Function() request, {
     required String operation,
   }) async {
-    _checkAuth();
+    await _checkAuthAsync();
     try {
       debugPrint('Executing OneDrive operation: $operation');
       return await request();
@@ -1043,9 +1061,12 @@ class OneDriveProvider extends CloudStorageProvider {
       if (e.error is SocketException) {
         throw NoConnectionException(e.message ?? e.toString());
       }
+      // 🎯 不再在此处设置 _isAuthenticated = false：
+      // Dio 拦截器已全权负责 401 处理（刷新 + 重试），若刷新失败会在拦截器内设置。
+      // 此处重复设置会导致一次瞬时失败永久杀死 provider（修复前 _checkAuth 无恢复路径）。
+      // 现在 _checkAuthAsync 有恢复路径，即使 _isAuthenticated = false 也能尝试刷新恢复。
       if (e.response?.statusCode == 401) {
-        _isAuthenticated = false;
-        debugPrint('OneDrive token appears to be expired after refresh attempt. User re-authentication is required.');
+        debugPrint('OneDrive 401 after Dio interceptor refresh attempt.');
       }
       rethrow;
     } catch (e) {
@@ -1054,10 +1075,23 @@ class OneDriveProvider extends CloudStorageProvider {
     }
   }
 
-  void _checkAuth() {
-    if (!_isAuthenticated) {
-      throw Exception('OneDriveProvider: Not authenticated. Call connect() first.');
+  // 🎯 认证检查（带恢复路径）：
+  // 若 _isAuthenticated = false 但 _refreshToken != null，尝试刷新恢复，
+  // 避免一次瞬时失败（并发冲突、网络抖动）永久杀死 provider。
+  // 只有刷新也失败时才真正抛异常，此时用户需重新 OAuth。
+  Future<void> _checkAuthAsync() async {
+    if (_isAuthenticated) return;
+    if (_refreshToken != null) {
+      try {
+        await _refreshAccessToken();
+        _isAuthenticated = true;
+        debugPrint('OneDriveProvider: _checkAuthAsync recovered via refresh token.');
+        return;
+      } catch (e) {
+        throw Exception('OneDriveProvider: Not authenticated and refresh failed: $e');
+      }
     }
+    throw Exception('OneDriveProvider: Not authenticated. Call connect() first.');
   }
 
   Future<_ResolvedShareInfo?> _resolveShareUrlForUpload(String shareUrl) async {
