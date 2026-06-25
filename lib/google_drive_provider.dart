@@ -86,10 +86,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
         _currentUserSubscription?.cancel();
         _currentUserSubscription = _googleSignIn!.onCurrentUserChanged.listen((account) {
           if (account == null) {
-            debugPrint('GoogleDriveProvider: onCurrentUserChanged received null - setting sdkSignOutDetected flag');
+            // 🎯 [GDriveAuth] 诊断日志：记录 SDK 登出事件的时间戳和可能原因
+            // 可能原因：用户在系统设置撤销权限 / SDK 内部安全策略登出 / Play Services 被杀 / 用户在其他设备改密码
+            debugPrint('[GDriveAuth] onCurrentUserChanged received null at ${DateTime.now().toIso8601String()} - setting _sdkSignOutDetected=true. '
+                'Possible causes: user revoked permission / SDK internal sign-out / Play Services killed / password changed on another device. '
+                'All subsequent _checkAuth() will fail until user re-login via connect(forceInteractive:true).');
             _sdkSignOutDetected = true;
           } else {
-            debugPrint('GoogleDriveProvider: onCurrentUserChanged received account (${account.email})');
+            debugPrint('[GDriveAuth] onCurrentUserChanged received account (${account.email}) at ${DateTime.now().toIso8601String()} - clearing _sdkSignOutDetected');
             _sdkSignOutDetected = false;
           }
         });
@@ -104,6 +108,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
       // 🎯 先尝试 signInSilently() 获取已登录账户
       account = await _googleSignIn!.signInSilently();
       if (account == null) {
+        // 🎯 [GDriveAuth] 诊断日志：首次 signInSilently 失败
+        debugPrint('[GDriveAuth] connect(): first signInSilently() returned null, silentOnly=$silentOnly');
         // 🎯 silentOnly 模式：signInSilently 失败后指数退避重试
         // 应对安卓端 Google Play Services 初始化时序问题（应用重启后首次调用可能返回 null）
         // 退避策略：500ms → 1s → 2s，最多 3 次重试
@@ -115,7 +121,16 @@ class GoogleDriveProvider extends CloudStorageProvider {
             debugPrint('Google Drive: silentOnly mode, retrying signInSilently after ${delay.inMilliseconds}ms (attempt ${i + 1}/$maxRetries)');
             await Future.delayed(delay);
             account = await _googleSignIn!.signInSilently();
-            if (account != null) break;
+            if (account != null) {
+              debugPrint('[GDriveAuth] connect(): signInSilently() succeeded on retry ${i + 1}/$maxRetries');
+              break;
+            }
+            // 🎯 [GDriveAuth] 诊断日志：每次重试失败
+            debugPrint('[GDriveAuth] connect(): signInSilently() retry ${i + 1}/$maxRetries returned null');
+          }
+          // 🎯 [GDriveAuth] 诊断日志：重试全部失败
+          if (account == null) {
+            debugPrint('[GDriveAuth] connect(): all $maxRetries silentOnly retries failed, will return null or fall back to forceInteractive=$forceInteractive');
           }
         }
       }
@@ -498,7 +513,11 @@ class GoogleDriveProvider extends CloudStorageProvider {
 
   @override
   Future<bool> validateCredentials() async {
-    if (!isAuthenticated || _currentAccount == null) return false;
+    if (!isAuthenticated || _currentAccount == null) {
+      // 🎯 [GDriveAuth] 诊断日志：前置条件不满足
+      debugPrint('[GDriveAuth] validateCredentials(): precondition failed, isAuthenticated=$isAuthenticated, _currentAccount=${_currentAccount?.email}');
+      return false;
+    }
     try {
       // 🎯 通过 driveApi.about.get() 发起实际 API 请求验证凭据有效性
       // _executeRequest 内部会先 _refreshAuthClient()（重新 signInSilently 获取最新 token）
@@ -507,13 +526,19 @@ class GoogleDriveProvider extends CloudStorageProvider {
       });
       return true;
     } catch (e) {
-      debugPrint('Google Drive validateCredentials failed: $e');
       // 🎯 凭据验证失败：可能是 invalid_grant（refresh token 已失效）
       // signOut 清除 SDK 缓存的过期凭据，避免后续 signInSilently
       // 继续返回过期账户导致循环重试
       final errorStr = e.toString();
-      if (errorStr.contains('invalid_grant') || errorStr.contains('401') || errorStr.contains('403')) {
-        debugPrint('Google Drive validateCredentials: auth error detected, signing out to clear stale credentials');
+      // 🎯 [GDriveAuth] 诊断日志：记录完整错误信息，区分 invalid_grant vs 401/403 vs 网络错误
+      final isInvalidGrant = errorStr.contains('invalid_grant');
+      final is401or403 = errorStr.contains('401') || errorStr.contains('403');
+      final willSignOut = isInvalidGrant || is401or403;
+      debugPrint('[GDriveAuth] validateCredentials failed: errorType=${e.runtimeType}, willSignOut=$willSignOut, isInvalidGrant=$isInvalidGrant, is401or403=$is401or403');
+      debugPrint('[GDriveAuth] validateCredentials error detail: $e');
+      debugPrint('[GDriveAuth] validateCredentials stack: ${StackTrace.current}');
+      if (willSignOut) {
+        debugPrint('[GDriveAuth] validateCredentials: auth error detected, signing out to clear stale credentials');
         await signOut();
       }
       return false;
@@ -679,6 +704,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
     // 如果 onCurrentUserChanged 流收到 null（如用户在系统设置中撤销权限），
     // 标记当前实例认证失效，后续请求会快速失败，引导用户重新登录
     if (_sdkSignOutDetected) {
+      // 🎯 [GDriveAuth] 诊断日志：区分"SDK 登出"vs"普通未认证"
+      // 这是定位"一天过期"根因的关键节点之一
+      debugPrint('[GDriveAuth] _checkAuth(): failing due to _sdkSignOutDetected=true (SDK reported sign-out). '
+          'Request will throw "Not authenticated". isAuthenticated=$isAuthenticated, _currentAccount=${_currentAccount?.email}');
       isAuthenticated = false;
       _authFailed = true;
       _currentAccount = null;
@@ -697,13 +726,25 @@ class GoogleDriveProvider extends CloudStorageProvider {
   // 返回 true 表示重建成功，false 表示失败
   // 非私有方法，允许桌面端子类重写以使用 signInOffline() 刷新凭据
   Future<bool> _rebuildDriveApi() async {
-    if (_googleSignIn == null) return false;
+    if (_googleSignIn == null) {
+      // 🎯 [GDriveAuth] 诊断日志：_googleSignIn 为 null（应用重启后首次调用或未初始化）
+      debugPrint('[GDriveAuth] _rebuildDriveApi(): _googleSignIn is null, cannot rebuild');
+      return false;
+    }
     final account = await _googleSignIn!.signInSilently();
-    if (account == null) return false;
+    if (account == null) {
+      // 🎯 [GDriveAuth] 诊断日志：signInSilently 返回 null，SDK 无法恢复账户
+      debugPrint('[GDriveAuth] _rebuildDriveApi(): signInSilently() returned null, SDK cannot restore account');
+      return false;
+    }
     _currentAccount = account;
     _currentAuthentication = await account.authentication;
     final client = await _googleSignIn!.authenticatedClient();
-    if (client == null) return false;
+    if (client == null) {
+      // 🎯 [GDriveAuth] 诊断日志：authenticatedClient 返回 null
+      debugPrint('[GDriveAuth] _rebuildDriveApi(): authenticatedClient() returned null after signInSilently succeeded');
+      return false;
+    }
     _authClient?.close();
     _authClient = client;
     final retryClient = RetryClient(
@@ -723,6 +764,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
     if (_currentAccount == null) return;
     // 🎯 认证已失败，不再尝试 signInSilently()，避免弹出登录 UI
     if (_authFailed) {
+      // 🎯 [GDriveAuth] 诊断日志：因 _authFailed 粘性标记跳过刷新
+      debugPrint('[GDriveAuth] refreshAuthClient(): skipping due to _authFailed=true (sticky flag). User must re-login via connect(forceInteractive:true).');
       isAuthenticated = false;
       return;
     }
@@ -734,6 +777,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
       isAuthenticated = false;
       debugPrint('Google Drive _refreshAuthClient failed: $e');
       // 🎯 标记认证失败，后续不再尝试 signInSilently()
+      // 🎯 [GDriveAuth] 诊断日志：记录 _authFailed 被设为 true 的原因和调用栈
+      debugPrint('[GDriveAuth] _authFailed set to true at refreshAuthClient(), reason: _rebuildDriveApi failed with: $e');
+      debugPrint('[GDriveAuth] stack: ${StackTrace.current}');
       _authFailed = true;
     }
   }
@@ -744,6 +790,8 @@ class GoogleDriveProvider extends CloudStorageProvider {
       debugPrint('Auth retry limit reached. Throwing original error.');
       throw error;
     }
+    // 🎯 [GDriveAuth] 诊断日志：记录进入 auth retry 的错误详情和当前状态
+    debugPrint('[GDriveAuth] handleAuthErrorAndRetry: entered, error=$error, _authFailed=$_authFailed, _currentAccount=${_currentAccount?.email}');
     debugPrint('Authentication error occurred. Attempting to reconnect...');
     isAuthenticated = false;
     // M-08 fix: _currentAccount 为 null 时清理资源并抛出错误
@@ -751,11 +799,13 @@ class GoogleDriveProvider extends CloudStorageProvider {
       _authClient?.close();
       _authClient = null;
       _currentAuthentication = null;
+      // 🎯 [GDriveAuth] 诊断日志：_currentAccount 为 null，无法重试
+      debugPrint('[GDriveAuth] handleAuthErrorAndRetry: _currentAccount is null, cannot retry, throwing original error');
       throw error;
     }
     // 🎯 认证已失败，不再尝试 signInSilently()，避免弹出登录 UI
     if (_authFailed) {
-      debugPrint('Google Drive: auth previously failed, skipping signInSilently() in auth retry');
+      debugPrint('[GDriveAuth] handleAuthErrorAndRetry: skipping signInSilently() due to _authFailed=true (sticky flag)');
       throw error;
     }
     try {
@@ -766,6 +816,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
     } catch (e) {
       debugPrint('Failed to reconnect after auth error: $e');
       // 🎯 标记认证失败，后续不再尝试 signInSilently()
+      // 🎯 [GDriveAuth] 诊断日志：记录 _authFailed 被设为 true 的原因和调用栈
+      debugPrint('[GDriveAuth] _authFailed set to true at handleAuthErrorAndRetry(), reason: _rebuildDriveApi failed with: $e');
+      debugPrint('[GDriveAuth] stack: ${StackTrace.current}');
       _authFailed = true;
     }
     throw error;
@@ -954,18 +1007,29 @@ class GoogleDriveProvider extends CloudStorageProvider {
     if (_currentAccount != null && _currentAuthentication != null) {
       // 🎯 认证已失败，不再尝试 signInSilently()，避免弹出登录 UI
       if (_authFailed) {
-        debugPrint('Google Drive: auth previously failed, skipping token refresh');
+        // 🎯 [GDriveAuth] 诊断日志：因 _authFailed 粘性标记跳过刷新
+        debugPrint('[GDriveAuth] refreshAccessToken(): returning false due to _authFailed=true (sticky flag). User must re-login via connect(forceInteractive:true).');
         return false;
       }
       try {
-        return await _rebuildDriveApi();
+        final result = await _rebuildDriveApi();
+        if (!result) {
+          // 🎯 [GDriveAuth] 诊断日志：_rebuildDriveApi 返回 false（signInSilently 返回 null 或 authenticatedClient 为 null）
+          debugPrint('[GDriveAuth] refreshAccessToken(): _rebuildDriveApi() returned false (signInSilently returned null or authenticatedClient null)');
+        }
+        return result;
       } catch (e) {
         debugPrint('Google Drive SDK token refresh failed: $e');
         // 🎯 标记认证失败，后续不再尝试 signInSilently()
+        // 🎯 [GDriveAuth] 诊断日志：记录 _authFailed 被设为 true 的原因和调用栈
+        debugPrint('[GDriveAuth] _authFailed set to true at refreshAccessToken(), reason: _rebuildDriveApi threw: $e');
+        debugPrint('[GDriveAuth] stack: ${StackTrace.current}');
         _authFailed = true;
         return false;
       }
     }
+    // 🎯 [GDriveAuth] 诊断日志：前置条件不满足
+    debugPrint('[GDriveAuth] refreshAccessToken(): returning false, precondition failed, _currentAccount=${_currentAccount?.email}, _currentAuthentication=${_currentAuthentication != null}');
     return false;
   }
 
