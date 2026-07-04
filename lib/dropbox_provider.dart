@@ -461,6 +461,32 @@ class DropboxProvider extends CloudStorageProvider {
   }
 
   @override
+  Stream<List<int>> getFileRangeStream({
+    required String path,
+    required bool isPath,
+    required int offset,
+    required int length,
+    CloudAccessType? cloudAccess,
+  }) {
+    // 🎯 流式读取：使用 ResponseType.stream，数据到达即返回
+    // cloudAccess is ignored for Dropbox (no AppData concept)
+    return _executeRequest(() async {
+      final normalizedPath = _ensurePathFormat(path, isPath: isPath);
+      final response = await _dio.post<ResponseBody>(
+        'https://content.dropboxapi.com/2/files/download',
+        options: Options(
+          headers: {
+            'Dropbox-API-Arg': _encodeDropboxApiArg(jsonEncode({'path': normalizedPath})),
+            'Range': 'bytes=$offset-${offset + length - 1}',
+          },
+          responseType: ResponseType.stream,
+        ),
+      );
+      return response.data?.stream ?? const Stream<List<int>>.empty();
+    }).asStream().asyncExpand((stream) => stream);
+  }
+
+  @override
   Future<String?> getDownloadUrl(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     // cloudAccess is ignored for Dropbox (no AppData concept)
     return _executeRequest(() async {

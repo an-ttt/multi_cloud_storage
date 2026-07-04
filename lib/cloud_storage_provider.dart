@@ -101,6 +101,16 @@ abstract class CloudStorageProvider {
     CloudAccessType? cloudAccess,
   });
 
+  /// 🎯 流式范围读取：数据到达即返回，不等待整个分块下载完成
+  /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
+  Stream<List<int>> getFileRangeStream({
+    required String path,
+    required bool isPath,
+    required int offset,
+    required int length,
+    CloudAccessType? cloudAccess,
+  });
+
   /// [isPath] true 表示 path 是路径，false 表示 path 是文件 ID
   Future<String?> getDownloadUrl(String path, {required bool isPath, CloudAccessType? cloudAccess});
 

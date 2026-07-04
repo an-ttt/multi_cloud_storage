@@ -480,6 +480,29 @@ class GoogleDriveProvider extends CloudStorageProvider {
   }
 
   @override
+  Stream<List<int>> getFileRangeStream({
+    required String path,
+    required bool isPath,
+    required int offset,
+    required int length,
+    CloudAccessType? cloudAccess,
+  }) {
+    // 🎯 流式读取：直接返回 media.stream，不 fold 成 bytes
+    return _executeRequest(() async {
+      final fileId = await _resolveFileId(path, isPath: isPath, cloudAccess: cloudAccess);
+      if (fileId == null) {
+        throw Exception('GoogleDriveProvider: File not found at $path');
+      }
+      final end = offset + length - 1;
+      final media = await driveApi.files.get(
+        fileId,
+        downloadOptions: drive.PartialDownloadOptions(drive.ByteRange(offset, end)),
+      ) as drive.Media;
+      return media.stream;
+    }).asStream().asyncExpand((stream) => stream);
+  }
+
+  @override
   Future<String?> getDownloadUrl(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     return _executeRequest(() async {
       final fileId = await _resolveFileId(path, isPath: isPath, cloudAccess: cloudAccess);

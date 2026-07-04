@@ -326,6 +326,17 @@ class ICloudProvider extends CloudStorageProvider {
   }
 
   @override
+  Stream<List<int>> getFileRangeStream({
+    required String path,
+    required bool isPath,
+    required int offset,
+    required int length,
+    CloudAccessType? cloudAccess,
+  }) {
+    throw UnsupportedError('getFileRangeStream is not supported for iCloud');
+  }
+
+  @override
   Future<String?> getDownloadUrl(String path, {required bool isPath, CloudAccessType? cloudAccess}) async {
     throw UnsupportedError('getDownloadUrl is not supported for iCloud');
   }
