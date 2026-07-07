@@ -34,6 +34,11 @@ class OneDriveProvider extends CloudStorageProvider {
   // refresh_token 轮转冲突（Microsoft 每次刷新会返回新的 refresh_token，旧的可能立即失效）
   Completer<void>? _refreshCompleter;
 
+  // 🎯 刷新去抖：记录最近一次成功刷新的时间。在此窗口内的 401 直接用当前 token 重试，
+  // 不再触发刷新，避免并发请求引发多次 refresh_token 轮转导致旧 refresh_token 失效
+  DateTime? _lastRefreshTime;
+  static const _refreshDebounceWindow = Duration(seconds: 30);
+
   // 🎯 桌面端（Windows/Linux）OAuth 回调策略：
   // 使用 flutter_web_auth_2 的 Server 实现（useWebview: false），在本地启动 HTTP 服务器
   // 接收回调，而非依赖 WebView 的 NavigationStarting 拦截机制。
@@ -405,6 +410,13 @@ class OneDriveProvider extends CloudStorageProvider {
     }
   }
 
+  // 🎯 判断请求是否发往 Graph API（需要 Bearer 认证）。
+  // @microsoft.graph.downloadUrl 是预签名 URL（指向 CDN），自带认证参数，
+  // 不需要也不应该附加 Bearer token——附加过期的 Bearer 反而会被 CDN 判定 401。
+  bool _isGraphApiRequest(String url) {
+    return url.startsWith('https://graph.microsoft.com/');
+  }
+
   void _initializeDio() {
     _dio = Dio(BaseOptions(
       connectTimeout: _connectTimeout,
@@ -413,13 +425,19 @@ class OneDriveProvider extends CloudStorageProvider {
     ));
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
-        if (_accessToken != null) {
+        // 🎯 仅对 Graph API 请求附加 Bearer token；预签名 downloadUrl 自带认证，无需附加
+        if (_accessToken != null && _isGraphApiRequest(options.uri.toString())) {
           options.headers['Authorization'] = 'Bearer $_accessToken';
         }
         return handler.next(options);
       },
       onError: (e, handler) async {
-        if (e.response?.statusCode == 401 && _refreshToken != null) {
+        // 🎯 预签名 downloadUrl 的 401 不触发 token 刷新：
+        // downloadUrl 自带认证，401 说明 URL 本身过期/无效，刷新 access_token 无济于事，
+        // 重试还会用同一个已失效的 downloadUrl，只会再次 401，白白消耗一次刷新机会。
+        if (e.response?.statusCode == 401 &&
+            _refreshToken != null &&
+            _isGraphApiRequest(e.requestOptions.uri.toString())) {
           // S-06 fix: 添加重试计数限制，防止无限循环
           final retryCount = e.requestOptions.extra['onedrive_refresh_retry'] as int? ?? 0;
           if (retryCount >= 1) {
@@ -427,10 +445,18 @@ class OneDriveProvider extends CloudStorageProvider {
             _isAuthenticated = false;
             return handler.reject(e);
           }
-          debugPrint('OneDrive token expired (401). Attempting to refresh token.');
+          // 🎯 去抖：若刚刚刷新成功（在去抖窗口内），直接用当前 token 重试，
+          // 不再触发刷新，避免并发请求引发多次 refresh_token 轮转导致旧 refresh_token 失效
+          final recentlyRefreshed = _lastRefreshTime != null &&
+              DateTime.now().difference(_lastRefreshTime!) < _refreshDebounceWindow;
           try {
-            await _refreshAccessToken();
-            debugPrint('OneDrive token refreshed successfully. Retrying original request.');
+            if (!recentlyRefreshed) {
+              debugPrint('OneDrive token expired (401). Attempting to refresh token.');
+              await _refreshAccessToken();
+              debugPrint('OneDrive token refreshed successfully. Retrying original request.');
+            } else {
+              debugPrint('OneDrive 401 within debounce window, retrying with current token.');
+            }
             final newHeaders = Map<String, dynamic>.from(e.requestOptions.headers);
             newHeaders['Authorization'] = 'Bearer $_accessToken';
             final response = await _dio.request(
@@ -438,7 +464,7 @@ class OneDriveProvider extends CloudStorageProvider {
               options: Options(
                 method: e.requestOptions.method,
                 headers: newHeaders,
-                extra: {'onedrive_refresh_retry': retryCount + 1},
+                extra: {'onedrive_refresh_retry': recentlyRefreshed ? 1 : retryCount + 1},
               ),
               data: e.requestOptions.data,
               queryParameters: e.requestOptions.queryParameters,
