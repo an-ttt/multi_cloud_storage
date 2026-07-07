@@ -805,14 +805,16 @@ class OneDriveProvider extends CloudStorageProvider {
     return _executeRequest(() async {
       final String itemUrl;
       if (!isPath) {
-        itemUrl = _buildItemUrl(path, '?\$select=@content.downloadUrl');
+        itemUrl = _buildItemUrl(path, '');
       } else {
         final encodedPath = _encodePath(path);
-        itemUrl = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, ':?\$select=@content.downloadUrl');
+        itemUrl = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, '');
       }
 
       final metadataResponse = await _dio.get(itemUrl);
-      final downloadUrl = metadataResponse.data?['@content.downloadUrl'] as String?;
+      // 优先获取 Graph API 的 URL，如果不存在则尝试获取旧版/核心 API 的 URL
+      final downloadUrl = (metadataResponse.data?['@microsoft.graph.downloadUrl'] ?? 
+                     metadataResponse.data?['@content.downloadUrl']) as String?;
 
       if (downloadUrl == null) {
         throw Exception('OneDriveProvider: Could not get download URL for $path');
@@ -839,19 +841,19 @@ class OneDriveProvider extends CloudStorageProvider {
     required int length,
     CloudAccessType? cloudAccess,
   }) {
-    // 🎯 流式范围读取：根据 OneDrive API 规范，Range 头必须附加到 @content.downloadUrl
-    // 而不是直接在 /content 端点上使用。使用 $select 只获取下载 URL，提高效率
     return _executeRequest(() async {
       final String itemUrl;
       if (!isPath) {
-        itemUrl = _buildItemUrl(path, '?\$select=@content.downloadUrl');
+        itemUrl = _buildItemUrl(path, '');
       } else {
         final encodedPath = _encodePath(path);
-        itemUrl = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, ':?\$select=@content.downloadUrl');
+        itemUrl = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, '');
       }
 
       final metadataResponse = await _dio.get(itemUrl);
-      final downloadUrl = metadataResponse.data?['@content.downloadUrl'] as String?;
+      // 优先获取 Graph API 的 URL，如果不存在则尝试获取旧版/核心 API 的 URL
+      final downloadUrl = (metadataResponse.data?['@microsoft.graph.downloadUrl'] ?? 
+                     metadataResponse.data?['@content.downloadUrl']) as String?;
 
       if (downloadUrl == null) {
         throw Exception('OneDriveProvider: Could not get download URL for $path');
@@ -875,15 +877,16 @@ class OneDriveProvider extends CloudStorageProvider {
     return _executeRequest(() async {
       final String url;
       if (!isPath) {
-        url = _buildItemUrl(path, '?\$select=@content.downloadUrl');
+        url = _buildItemUrl(path, '');
       } else {
         final encodedPath = _encodePath(path);
-        url = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, ':?\$select=@content.downloadUrl');
+        url = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, '');
       }
-      final response = await _dio.get(
+      final metadataResponse = await _dio.get(
         url,
       );
-      return response.data['@content.downloadUrl'] as String?;
+      return (metadataResponse.data?['@microsoft.graph.downloadUrl'] ?? 
+                     metadataResponse.data?['@content.downloadUrl']) as String?;
     }, operation: 'getDownloadUrl for $path');
   }
 
