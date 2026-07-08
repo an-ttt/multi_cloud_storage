@@ -730,6 +730,109 @@ class OneDriveProvider extends CloudStorageProvider {
     );
   }
 
+  // 🎯 P0 fix: override 基类默认实现，使用 OneDrive 冒号路径语法上传到指定父 item ID 下。
+  // 基类默认实现拼接 '$parentId/$fileName' 作为 remotePath，以 isPath:false 调用 uploadFile，
+  // 生成无效 URL 'me/drive/items/parentId/fileName/content' → 400 Bad Request。
+  // 正确语法：PUT /me/drive/items/{parentId}:/{fileName}:/content
+  @override
+  Future<String> uploadFileToParent({
+    required String localPath,
+    required String parentId,
+    required String fileName,
+    Map<String, dynamic>? metadata,
+    CloudAccessType? cloudAccess,
+  }) {
+    return _executeRequest(
+      () async {
+        final file = File(localPath);
+        final fileSize = await file.length();
+        final encodedFileName = Uri.encodeComponent(fileName);
+        // 🎯 OneDrive 冒号路径语法：/me/drive/items/{parentId}:/{fileName}:/content
+        if (fileSize <= _simpleUploadMaxBytes) {
+          // 小文件：简单上传
+          final bytes = await file.readAsBytes();
+          final url = 'https://graph.microsoft.com/v1.0/me/drive/items/$parentId:/$encodedFileName:/content';
+          await _dio.put(
+            url,
+            data: bytes,
+            options: Options(
+              headers: {
+                'Content-Type': 'application/octet-stream',
+              },
+            ),
+          );
+        } else {
+          // 大文件：创建上传会话，分块上传
+          final createSessionUrl = 'https://graph.microsoft.com/v1.0/me/drive/items/$parentId:/$encodedFileName:/createUploadSession';
+          final sessionResponse = await _dio.post(
+            createSessionUrl,
+            data: {'item': {'@microsoft.graph.conflictBehavior': 'replace'}},
+            options: Options(contentType: 'application/json'),
+          );
+          final uploadUrl = sessionResponse.data['uploadUrl'] as String;
+          final chunkDio = Dio(BaseOptions(
+            sendTimeout: const Duration(minutes: 5),
+            receiveTimeout: const Duration(minutes: 5),
+          ));
+
+          int bytesUploaded = 0;
+          final stream = file.openRead();
+          final buffer = BytesBuilder();
+
+          await for (final chunk in stream) {
+            buffer.add(chunk);
+            while (buffer.length >= _uploadChunkSize) {
+              final bufferedBytes = buffer.takeBytes();
+              final uploadChunk = Uint8List.sublistView(
+                Uint8List.fromList(bufferedBytes), 0, _uploadChunkSize,
+              );
+              if (bufferedBytes.length > _uploadChunkSize) {
+                buffer.add(Uint8List.sublistView(
+                  Uint8List.fromList(bufferedBytes), _uploadChunkSize,
+                ));
+              }
+
+              final start = bytesUploaded;
+              final end = bytesUploaded + uploadChunk.length - 1;
+              await chunkDio.put(
+                uploadUrl,
+                data: Stream.fromIterable([uploadChunk]),
+                options: Options(
+                  headers: {
+                    'Content-Length': uploadChunk.length,
+                    'Content-Range': 'bytes $start-$end/$fileSize',
+                  },
+                ),
+              );
+              bytesUploaded += uploadChunk.length;
+            }
+          }
+
+          // 发送剩余数据（最后一块允许小于 320 KiB 的倍数）
+          if (buffer.length > 0) {
+            final remainingBytes = buffer.takeBytes();
+            final uploadChunk = Uint8List.fromList(remainingBytes);
+            final start = bytesUploaded;
+            final end = bytesUploaded + uploadChunk.length - 1;
+            await chunkDio.put(
+              uploadUrl,
+              data: Stream.fromIterable([uploadChunk]),
+              options: Options(
+                headers: {
+                  'Content-Length': uploadChunk.length,
+                  'Content-Range': 'bytes $start-$end/$fileSize',
+                },
+              ),
+            );
+            bytesUploaded += uploadChunk.length;
+          }
+        }
+        return '$parentId/$fileName';
+      },
+      operation: 'uploadFileToParent to $parentId/$fileName',
+    );
+  }
+
   @override
   Future<void> deleteFile(String path, {required bool isPath, CloudAccessType? cloudAccess}) {
     return _executeRequest(
@@ -762,10 +865,8 @@ class OneDriveProvider extends CloudStorageProvider {
         String url;
         if (parentPath.isEmpty) {
           url = 'https://graph.microsoft.com/v1.0/${_getBasePath(cloudAccess)}/children';
-        } else if (!isPath) {
-          // 🎯 父路径是 item ID，使用 ID-based URL
-          url = _buildItemUrl(parentPath, '/children');
         } else {
+          // 🎯 P4 fix: 删除原 else if (!isPath) 死代码分支（上方已校验 isPath=true，该分支永不执行）
           final encodedParentPath = _encodePath(parentPath);
           url = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedParentPath, ':/children');
         }
@@ -829,25 +930,23 @@ class OneDriveProvider extends CloudStorageProvider {
     CloudAccessType? cloudAccess,
   }) {
     return _executeRequest(() async {
-      final String itemUrl;
+      // 🎯 P3 fix: 直接用 /content 端点 + Range header 获取字节范围，
+      // 不再依赖 @microsoft.graph.downloadUrl 预签名 URL。
+      // 原实现的问题：
+      // 1. 并非所有 item 都有 @microsoft.graph.downloadUrl（如 OneDrive Business 某些配置）
+      // 2. 预签名 URL 有有效期（约 1 小时），大文件分块下载时可能过期
+      // 3. CDN 对 Range 的支持非保证行为
+      // Graph API 的 /content 端点原生支持 Range header（带 Range 时不 302 重定向，直接返回 206）
+      final String url;
       if (!isPath) {
-        itemUrl = _buildItemUrl(path, '');
+        url = _buildItemUrl(path, '/content');
       } else {
         final encodedPath = _encodePath(path);
-        itemUrl = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, '');
-      }
-
-      final metadataResponse = await _dio.get(itemUrl);
-      // 优先获取 Graph API 的 URL，如果不存在则尝试获取旧版/核心 API 的 URL
-      final downloadUrl = (metadataResponse.data?['@microsoft.graph.downloadUrl'] ?? 
-                     metadataResponse.data?['@content.downloadUrl']) as String?;
-
-      if (downloadUrl == null) {
-        throw Exception('OneDriveProvider: Could not get download URL for $path');
+        url = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, ':/content');
       }
 
       final response = await _dio.get(
-        downloadUrl,
+        url,
         options: Options(
           headers: {
             'Range': 'bytes=$offset-${offset + length - 1}',
@@ -868,25 +967,17 @@ class OneDriveProvider extends CloudStorageProvider {
     CloudAccessType? cloudAccess,
   }) {
     return _executeRequest(() async {
-      final String itemUrl;
+      // 🎯 P3 fix: 同 getFileRange，直接用 /content + Range，不依赖预签名 downloadUrl
+      final String url;
       if (!isPath) {
-        itemUrl = _buildItemUrl(path, '');
+        url = _buildItemUrl(path, '/content');
       } else {
         final encodedPath = _encodePath(path);
-        itemUrl = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, '');
-      }
-
-      final metadataResponse = await _dio.get(itemUrl);
-      // 优先获取 Graph API 的 URL，如果不存在则尝试获取旧版/核心 API 的 URL
-      final downloadUrl = (metadataResponse.data?['@microsoft.graph.downloadUrl'] ?? 
-                     metadataResponse.data?['@content.downloadUrl']) as String?;
-
-      if (downloadUrl == null) {
-        throw Exception('OneDriveProvider: Could not get download URL for $path');
+        url = _buildPathBasedUrl(_getBasePath(cloudAccess), encodedPath, ':/content');
       }
 
       final response = await _dio.get<ResponseBody>(
-        downloadUrl,
+        url,
         options: Options(
           headers: {
             'Range': 'bytes=$offset-${offset + length - 1}',
@@ -1001,8 +1092,12 @@ class OneDriveProvider extends CloudStorageProvider {
       return true;
     }
     try {
+      // 🎯 P2 fix: 改用 GET /me 端点验证 token 有效性。
+      // 原实现 GET /me/drive/root/children 需要 Files.Read/Files.Read.All 权限，
+      // 若调用方仅授权 Files.ReadWrite.AppFolder scope 会返回 403 被误判为 token 过期。
+      // GET /me 只需 User.Read 权限（OAuth 默认包含），更准确地反映 token 有效性。
       final response = await _dio.get(
-        'https://graph.microsoft.com/v1.0/me/drive/root/children?\$select=id&\$top=1',
+        'https://graph.microsoft.com/v1.0/me?\$select=id',
         options: Options(validateStatus: (status) => status != null && status < 500),
       );
       // M-24 fix: 仅 401/403 表示 token 过期，其他错误不应误判
@@ -1211,7 +1306,11 @@ class OneDriveProvider extends CloudStorageProvider {
   }
 
   String _encodePath(String path) {
-    final cleanPath = path.startsWith('/') ? path.substring(1) : path;
+    var cleanPath = path.startsWith('/') ? path.substring(1) : path;
+    // 🎯 P5 fix: 去除尾部斜杠，避免生成 'Music/:' 等非标准 URL
+    if (cleanPath.length > 1 && cleanPath.endsWith('/')) {
+      cleanPath = cleanPath.substring(0, cleanPath.length - 1);
+    }
     if (cleanPath.isEmpty) return '';
     return cleanPath.split('/').map(Uri.encodeComponent).join('/');
   }
@@ -1226,7 +1325,12 @@ class OneDriveProvider extends CloudStorageProvider {
   //     → https://graph.microsoft.com/v1.0/me/drive/root:/Music/file.mp3:/content
   static String _buildPathBasedUrl(String basePath, String encodedPath, String suffix) {
     if (encodedPath.isEmpty) {
-      return 'https://graph.microsoft.com/v1.0/$basePath$suffix';
+      // 🎯 P1 fix: 空路径（根目录/approot）时，suffix 若以 ':' 开头需剥离前导冒号，
+      // 因为根目录应使用 ID 导航格式（root/children、root?select=...），
+      // 而非路径格式（root:/children 会被解释为查找名为 "children" 的子项）。
+      // 例如: ':/children' → '/children'，':?$select=...' → '?$select=...'
+      final cleanSuffix = suffix.startsWith(':') ? suffix.substring(1) : suffix;
+      return 'https://graph.microsoft.com/v1.0/$basePath$cleanSuffix';
     }
     return 'https://graph.microsoft.com/v1.0/$basePath:/$encodedPath$suffix';
   }
