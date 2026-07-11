@@ -749,30 +749,45 @@ class DropboxProvider extends CloudStorageProvider {
       throw Exception('No Dropbox refresh token available.');
     }
     debugPrint('Executing Dropbox token refresh request.');
+    // 🎯 [Bug #5] token 刷新是轻量快速请求，使用更短 timeout（15s）避免 90s 长等待
+    // 并添加 3 次指数退避重试（1s → 2s → 4s）应对网络抖动
     final dioForToken = Dio(BaseOptions(
-      connectTimeout: _connectTimeout,
-      sendTimeout: _sendTimeout,
-      receiveTimeout: _receiveTimeout,
+      connectTimeout: const Duration(seconds: 15),
+      sendTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 15),
     ));
     final body = {
       'grant_type': 'refresh_token',
       'refresh_token': _token!.refreshToken,
       'client_id': _appKey,
     };
-    final response = await dioForToken.post(
-      'https://api.dropboxapi.com/oauth2/token',
-      data: body,
-      options: Options(contentType: 'application/x-www-form-urlencoded'),
-    );
-    final newPartialToken = DropboxToken.fromJson(response.data);
-    // Create a new token, preserving the original refresh token.
-    _token = DropboxToken(
-      accessToken: newPartialToken.accessToken,
-      tokenType: newPartialToken.tokenType,
-      expiresIn: newPartialToken.expiresIn,
-      refreshToken: _token!.refreshToken,
-    );
-    debugPrint('New Dropbox access token obtained.');
+    const maxRetries = 3;
+    for (var attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        final response = await dioForToken.post(
+          'https://api.dropboxapi.com/oauth2/token',
+          data: body,
+          options: Options(contentType: 'application/x-www-form-urlencoded'),
+        );
+        final newPartialToken = DropboxToken.fromJson(response.data);
+        // Create a new token, preserving the original refresh token.
+        _token = DropboxToken(
+          accessToken: newPartialToken.accessToken,
+          tokenType: newPartialToken.tokenType,
+          expiresIn: newPartialToken.expiresIn,
+          refreshToken: _token!.refreshToken,
+        );
+        debugPrint('New Dropbox access token obtained.');
+        return;
+      } on DioException catch (e) {
+        debugPrint('Dropbox token refresh attempt ${attempt + 1}/$maxRetries failed: ${e.type}');
+        if (attempt < maxRetries - 1) {
+          await Future.delayed(Duration(seconds: 1 << attempt));
+          continue;
+        }
+        rethrow;
+      }
+    }
   }
 
   /// Fetches the current user's account info.

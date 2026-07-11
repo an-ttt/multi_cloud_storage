@@ -74,9 +74,14 @@ class GoogleDriveProvider extends CloudStorageProvider {
     try {
       // 🎯 v6: 通过构造函数创建/复用 GoogleSignIn 实例，传入 scopes 和 clientId
       if (_googleSignIn == null || (serverClientId != null && serverClientId != _initializedServerClientId)) {
+        // 🎯 [Bug #7] Android 平台不显式传入 clientId，让 SDK 自动从 google-services.json 读取
+        // Android 上 GoogleSignIn.clientId 用于 Web Client ID（server auth code），
+        // 显式传入错误的 serverClientId 会覆盖系统配置导致 OAuth 失败
+        // iOS/Desktop 平台仍需要显式传入 serverClientId
+        final effectiveClientId = Platform.isAndroid ? null : serverClientId;
         _googleSignIn = google_sign_in.GoogleSignIn(
           scopes: GoogleDriveProvider.scopes,
-          clientId: serverClientId,
+          clientId: effectiveClientId,
         );
         _initializedServerClientId = serverClientId;
         // 🎯 监听 onCurrentUserChanged 流感知 SDK 内部状态变更
@@ -112,10 +117,10 @@ class GoogleDriveProvider extends CloudStorageProvider {
         debugPrint('[GDriveAuth] connect(): first signInSilently() returned null, silentOnly=$silentOnly');
         // 🎯 silentOnly 模式：signInSilently 失败后指数退避重试
         // 应对安卓端 Google Play Services 初始化时序问题（应用重启后首次调用可能返回 null）
-        // 退避策略：500ms → 1s → 2s，最多 3 次重试
+        // 🎯 [Bug #6] 延长退避间隔至 1s→2s→4s→8s，最多 4 次重试，覆盖 Play Services 冷启动时间（3-5s）
         if (silentOnly) {
-          const maxRetries = 3;
-          const initialDelay = Duration(milliseconds: 500);
+          const maxRetries = 4;
+          const initialDelay = Duration(seconds: 1);
           for (var i = 0; i < maxRetries; i++) {
             final delay = initialDelay * (1 << i);
             debugPrint('Google Drive: silentOnly mode, retrying signInSilently after ${delay.inMilliseconds}ms (attempt ${i + 1}/$maxRetries)');
