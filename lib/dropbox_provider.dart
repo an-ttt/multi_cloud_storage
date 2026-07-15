@@ -231,6 +231,8 @@ class DropboxProvider extends CloudStorageProvider {
           await provider._refreshToken();
           await provider._saveToken(provider._token);
         } catch (e) {
+          // 🎯 网络错误向上抛出，由调用方区分网络错误与认证错误
+          if (isNetworkException(e)) rethrow;
           debugPrint('Dropbox loadFromStorage: token refresh failed: $e');
           return null;
         }
@@ -244,6 +246,8 @@ class DropboxProvider extends CloudStorageProvider {
       debugPrint('Dropbox loadFromStorage successful for ${provider._account?.email}');
       return provider;
     } catch (e) {
+      // 🎯 网络错误向上抛出，由调用方区分网络错误与认证错误
+      if (isNetworkException(e)) rethrow;
       debugPrint('Dropbox loadFromStorage failed: $e');
       return null;
     }

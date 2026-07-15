@@ -8,6 +8,7 @@ import 'package:multi_cloud_storage/icloud_provider.dart';
 import 'package:multi_cloud_storage/onedrive_provider.dart';
 
 import 'package:multi_cloud_storage/dropbox_provider.dart';
+import 'exceptions/no_connection_exception.dart';
 export 'package:multi_cloud_storage/google_drive_scopes.dart';
 
 enum CloudStorageType { dropbox, oneDrive, googleDrive, icloud }
@@ -95,6 +96,8 @@ class MultiCloudStorage {
       debugPrint('Google Drive: credentials validation failed (token may be expired or revoked)');
       return null;
     } catch (e) {
+      // 🎯 网络错误向上抛出，由调用方区分网络错误与认证错误
+      if (isNetworkException(e)) rethrow;
       debugPrint('Google Drive credentials validation failed: $e');
       return null;
     }

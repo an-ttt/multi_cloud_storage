@@ -195,6 +195,8 @@ class OneDriveProvider extends CloudStorageProvider {
           try {
             await provider._refreshAccessToken();
           } catch (e) {
+            // 🎯 网络错误向上抛出，由调用方区分网络错误与认证错误
+            if (isNetworkException(e)) rethrow;
             debugPrint('OneDrive loadFromStorage: token refresh failed: $e');
             return null;
           }
@@ -207,6 +209,8 @@ class OneDriveProvider extends CloudStorageProvider {
       debugPrint('OneDrive loadFromStorage successful');
       return provider;
     } catch (e) {
+      // 🎯 网络错误向上抛出，由调用方区分网络错误与认证错误
+      if (isNetworkException(e)) rethrow;
       debugPrint('OneDrive loadFromStorage failed: $e');
       return null;
     }
