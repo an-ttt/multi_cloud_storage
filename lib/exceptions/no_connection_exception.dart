@@ -22,6 +22,7 @@ bool isNetworkException(Object e) {
     return e.type == DioExceptionType.connectionTimeout ||
         e.type == DioExceptionType.sendTimeout ||
         e.type == DioExceptionType.receiveTimeout ||
+        e.type == DioExceptionType.transformTimeout ||
         e.type == DioExceptionType.connectionError;
   }
   return false;
