@@ -134,8 +134,20 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       debugPrint(
         'Error occurred during the Google Drive connect process: $error',
       );
-      if (error is PlatformException && error.code == 'network_error') {
-        throw NoConnectionException(error.toString());
+      if (error is PlatformException) {
+        // 🎯 记录完整的 PlatformException 信息，便于诊断
+        debugPrint('[GDriveAuth] PlatformException details - code: ${error.code}, message: ${error.message}, details: ${error.details}');
+        
+        // 🎯 区分真正的网络错误与认证错误
+        // ApiException:7 (SIGN_IN_REQUIRED) 是认证错误，不是网络错误
+        // 只有真正的网络错误才转换为 NoConnectionException
+        final isNetworkError = error.code == 'network_error' && 
+            !_isAuthError(error);
+        
+        if (isNetworkError) {
+          throw NoConnectionException(error.toString());
+        }
+        // 🎯 认证错误（如 ApiException:7）不转换，直接抛出让上层处理
       }
       rethrow;
     }
@@ -342,6 +354,57 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
   // Google Drive uses SDK-managed tokens, no storage migration needed
   @override
   Future<void> saveToStorage(String storageKeyPrefix) async {}
+
+  /// 🎯 判断 PlatformException 是否为认证相关错误
+  /// ApiException:7 (SIGN_IN_REQUIRED) 是常见的认证错误，不是网络错误
+  /// 其他常见认证错误代码也需要识别
+  static bool _isAuthError(PlatformException error) {
+    final details = error.details?.toString() ?? '';
+    final message = error.message?.toString() ?? '';
+    
+    // ApiException:7 = SIGN_IN_REQUIRED
+    if (details.contains('ApiException:7') || 
+        details.contains('SIGN_IN_REQUIRED')) {
+      return true;
+    }
+    
+    // 其他认证相关错误代码
+    final authErrorCodes = [
+      'SIGN_IN_REQUIRED',
+      'INVALID_ACCOUNT',
+      'RESOLUTION_REQUIRED',
+      'NETWORK_ERROR', // Note: NETWORK_ERROR can be auth-related too
+      'INTERNAL_ERROR',
+      'DEVELOPER_ERROR',
+      'INVALID_SIGN_IN',
+      'UNKNOWN',
+    ];
+    
+    // 检查 code 是否为认证相关代码
+    if (authErrorCodes.contains(error.code)) {
+      return true;
+    }
+    
+    // 检查 message 或 details 是否包含认证相关关键词
+    final authKeywords = [
+      'ApiException',
+      'OAuth',
+      'auth',
+      'signin',
+      'sign-in',
+      'login',
+      'credential',
+    ];
+    
+    for (final keyword in authKeywords) {
+      if (message.toLowerCase().contains(keyword) || 
+          details.toLowerCase().contains(keyword)) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
 }
 
 Future<GoogleDriveProvider?> connectToGoogleDrive(
