@@ -1062,6 +1062,9 @@ class OneDriveProvider extends CloudStorageProvider {
       await _refreshAccessToken();
       return true;
     } catch (e) {
+      // 🎯 网络错误向上抛出，由调用方（CloudAccountTokenService）区分网络错误与认证错误，
+      // 避免网络故障被误判为认证失败（authError）并触发恢复冷却期
+      if (isNetworkException(e)) rethrow;
       debugPrint('OneDrive refreshAccessToken failed: $e');
       return false;
     }

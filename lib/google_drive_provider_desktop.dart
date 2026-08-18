@@ -207,6 +207,9 @@ class GoogleDriveProviderDesktop extends GoogleDriveProvider {
       await signOut();
       return false;
     } catch (e) {
+      // 🎯 网络错误向上抛出：由 validateGoogleDriveCredentials → CloudAccountTokenService
+      // 区分网络错误与认证错误，避免网络故障被误判为认证失败并触发恢复冷却期
+      if (isNetworkException(e)) rethrow;
       debugPrint('Google Drive Desktop validateCredentials failed: $e');
       // 🎯 检测 invalid_grant：refresh token 已失效，需清理 SDK 缓存
       final errorStr = e.toString();

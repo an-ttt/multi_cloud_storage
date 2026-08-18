@@ -566,6 +566,9 @@ class GoogleDriveProvider extends CloudStorageProvider {
       });
       return true;
     } catch (e) {
+      // 🎯 网络错误向上抛出：由 validateGoogleDriveCredentials → CloudAccountTokenService
+      // 区分网络错误与认证错误，避免网络故障被误判为认证失败并触发 300s 恢复冷却期
+      if (isNetworkException(e)) rethrow;
       // 🎯 凭据验证失败：可能是 invalid_grant（refresh token 已失效）
       // signOut 清除 SDK 缓存的过期凭据，避免后续 signInSilently
       // 继续返回过期账户导致循环重试

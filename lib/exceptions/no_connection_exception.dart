@@ -14,9 +14,12 @@ class NoConnectionException implements Exception {
       'NoConnectionException: $message (resourceId: $resourceId)';
 }
 
-/// 判断异常是否为网络错误（SocketException/TimeoutException/DioException 连接类错误）
+/// 判断异常是否为网络错误（NoConnectionException/SocketException/TimeoutException/DioException 连接类错误）
 /// 网络错误应向上抛出由调用方处理，不应被吞掉返回 null
 bool isNetworkException(Object e) {
+  // 🎯 本库自身抛出的 NoConnectionException（connect/_executeRequest 转换而来）也是网络错误，
+  // 否则 validateGoogleDriveCredentials 等调用方会把它误判为认证错误返回 null
+  if (e is NoConnectionException) return true;
   if (e is SocketException || e is TimeoutException) return true;
   if (e is DioException) {
     return e.type == DioExceptionType.connectionTimeout ||
